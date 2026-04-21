@@ -36,8 +36,6 @@ internal sealed class TrainingOptions
 
     public required string UnpopularDirectory { get; init; }
 
-    public string OutputModelDirectory { get; init; } = "models";
-
     public string OutputModelPrefix { get; init; } = string.Empty;
 
     public string PreprocessCacheDirectory { get; init; } = Path.Combine("models", "preprocess-cache");
@@ -178,14 +176,13 @@ internal sealed class TrainingOptions
         var contrastJitter = ReadDouble(map, "contrast-jitter", 0.15);
         var saturationJitter = ReadDouble(map, "saturation-jitter", 0.15);
         var minRandomCropScale = ReadDouble(map, "min-random-crop-scale", 0.85);
-        var (outputModelDirectory, outputModelPrefix) = ParseOutputModelPrefix(
+        var outputModelPrefix = ParseOutputModelPrefix(
             map.TryGetValue("output-model", out var outputModel) ? outputModel : null);
 
         var options = new TrainingOptions
         {
             PopularDirectory = Require(map, "popular-dir"),
             UnpopularDirectory = Require(map, "unpopular-dir"),
-            OutputModelDirectory = outputModelDirectory,
             OutputModelPrefix = outputModelPrefix,
             PreprocessCacheDirectory = map.TryGetValue("preprocess-cache-dir", out var preprocessCacheDirectory)
                 ? preprocessCacheDirectory
@@ -224,11 +221,6 @@ internal sealed class TrainingOptions
         if (string.IsNullOrWhiteSpace(options.PreprocessCacheDirectory))
         {
             throw new ArgumentException("preprocess-cache-dir cannot be empty.");
-        }
-
-        if (string.IsNullOrWhiteSpace(options.OutputModelDirectory))
-        {
-            throw new ArgumentException("output-model cannot resolve to an empty directory.");
         }
 
         if (options.Epochs <= 0)
@@ -299,9 +291,8 @@ Usage:
 Notes:
   --popular-dir should contain only popular images (label=1).
   --unpopular-dir should contain only unpopular images (label=0).
-  --output-model is a file-name prefix, not a final model path. If it includes
-  a directory part, that directory is used for output and the file name portion
-  is prepended to the auto-generated model file name.
+  --output-model is only a file-name prefix, not a path. It must not contain
+  '\' or '/'. Generated models are always written under models/.
   The trainer always auto-generates the rest of the model file name using train
   sample count, image size, augmentation flag, epochs, batch size, seed, and
   training completion time (month/day/hour/minute).
@@ -314,12 +305,12 @@ Notes:
 
     public string BuildInProgressOutputModelPath(int trainSampleCount)
     {
-        return Path.Combine(OutputModelDirectory, BuildGeneratedModelFileName(trainSampleCount, completedAtLocal: null));
+        return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal: null));
     }
 
     public string BuildCompletedAutoOutputModelPath(DateTimeOffset completedAtLocal, int trainSampleCount)
     {
-        return Path.Combine(OutputModelDirectory, BuildGeneratedModelFileName(trainSampleCount, completedAtLocal));
+        return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal));
     }
 
     private string BuildGeneratedModelFileName(int trainSampleCount, DateTimeOffset? completedAtLocal)
@@ -331,42 +322,30 @@ Notes:
         return $"{OutputModelPrefix}{trainSampleCount}_{TrainImageSize}_{augmentationTag}_e{Epochs}b{BatchSize}s{Seed}{timestampSuffix}.pt";
     }
 
-    private static (string Directory, string Prefix) ParseOutputModelPrefix(string? value)
+    private static string ParseOutputModelPrefix(string? value)
     {
-        const string defaultDirectory = "models";
-
         if (string.IsNullOrWhiteSpace(value))
         {
-            return (defaultDirectory, string.Empty);
+            return string.Empty;
         }
 
-        var trimmed = value.Trim();
-        var trimmedEnd = trimmed.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (string.IsNullOrWhiteSpace(trimmedEnd))
+        var prefix = value.Trim();
+        if (string.IsNullOrWhiteSpace(prefix))
         {
-            return (defaultDirectory, string.Empty);
+            return string.Empty;
         }
 
-        var endsWithSeparator =
-            trimmed.EndsWith(Path.DirectorySeparatorChar) ||
-            trimmed.EndsWith(Path.AltDirectorySeparatorChar);
-
-        if (endsWithSeparator)
+        if (prefix.Contains('\\') || prefix.Contains('/'))
         {
-            return (trimmedEnd, string.Empty);
+            throw new ArgumentException("output-model must be only a file-name prefix and cannot contain '\\' or '/'.");
         }
-
-        var directory = Path.GetDirectoryName(trimmed);
-        var prefix = Path.GetFileName(trimmed);
 
         if (string.Equals(Path.GetExtension(prefix), ".pt", StringComparison.OrdinalIgnoreCase))
         {
             prefix = Path.GetFileNameWithoutExtension(prefix);
         }
 
-        return (
-            string.IsNullOrWhiteSpace(directory) ? defaultDirectory : directory,
-            prefix);
+        return prefix;
     }
 
     private static int ReadInt(Dictionary<string, string> map, string key, int fallback)

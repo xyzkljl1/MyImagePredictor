@@ -23,13 +23,20 @@
 
 支持扩展名：`.jpg .jpeg .png .bmp .gif .webp .tif .tiff`
 
+格式处理说明：
+
+- `.jpg` / `.jpeg` / `.png` / `.bmp` / `.webp` / `.tif` / `.tiff`：按普通静态图处理，解码后统一转换到 `RGB`，再执行 `AutoOrient`、可选数据增强、`PadResize` 和 `Normalize`。
+- `.gif`：仅抽取首帧参与训练和预测，不会利用后续动画帧信息；后续流程与静态图相同。
+- 无论原始格式是什么，进入模型前都会被转换成同一种 `float32 CHW` 张量表示，所以模型本身看不到“文件格式”这个概念，只看到预处理后的像素张量。
+- 当前代码中，图片格式白名单以 [SupportedImageFiles.cs](/E:/MyWebsiteHelper/codex/src/ImagePopularity.Core/SupportedImageFiles.cs) 为准；如果后续新增、删除或调整某种图片格式的处理方式，README 这里也应同步更新。
+
 ## 2. 训练模型
 
 ```powershell
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
   --unpopular-dir D:\data\unpopular \
-  --output-model models\all_ \
+  --output-model all_ \
   --preprocess-cache-dir models\preprocess-cache \
   --backbone resnet152 \
   --freeze-backbone-epochs 3 \
@@ -54,8 +61,8 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 - 模型权重：自动命名，例如 `models/all_9000_320_a1_e30b256s42_04212210.pt`
 - 元信息：与模型同名的 `.meta.json` 文件
 
-`--output-model` 现在表示“自动命名模型文件名前缀”，不是最终模型文件完整路径。
-例如传入 `models\all_` 后，程序会在 `models` 目录下生成以 `all_` 开头的自动命名模型文件。
+`--output-model` 现在只表示“自动命名模型文件名前缀”，不是路径，也不会改变模型输出目录。
+例如传入 `all_` 后，程序会在 `models` 目录下生成以 `all_` 开头的自动命名模型文件。
 
 预训练骨干微调说明：
 

@@ -2,6 +2,7 @@ namespace ImagePopularity.Core;
 
 public static class SupportedImageFiles
 {
+    // Keep README's supported-format section in sync with this list.
     private static readonly HashSet<string> ExtensionsSet = new(StringComparer.OrdinalIgnoreCase)
     {
         ".jpg",
