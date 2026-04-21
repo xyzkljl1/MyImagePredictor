@@ -29,7 +29,7 @@
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
   --unpopular-dir D:\data\unpopular \
-  --output-model models\popularity-model.pt \
+  --output-model models\all_ \
   --preprocess-cache-dir models\preprocess-cache \
   --backbone resnet152 \
   --freeze-backbone-epochs 3 \
@@ -51,8 +51,11 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 
 训练会输出：
 
-- 模型权重：`models/popularity-model.pt`
-- 元信息：`models/popularity-model.meta.json`
+- 模型权重：自动命名，例如 `models/all_9000_320_a1_e30b256s42_04212210.pt`
+- 元信息：与模型同名的 `.meta.json` 文件
+
+`--output-model` 现在表示“自动命名模型文件名前缀”，不是最终模型文件完整路径。
+例如传入 `models\all_` 后，程序会在 `models` 目录下生成以 `all_` 开头的自动命名模型文件。
 
 预训练骨干微调说明：
 
@@ -78,7 +81,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 using ImagePopularity.Core;
 
 using var predictor = new ImagePopularityPredictor(
-    modelPath: @"models\popularity-model.pt",
+    modelPath: @"models\all_9000_320_a1_e30b256s42_04212210.pt",
     options: new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384, // 可与训练分辨率不同
@@ -100,7 +103,7 @@ var imagePaths = Directory.EnumerateFiles(@"D:\data\candidates", "*", SearchOpti
     .OrderBy(path => path)
     .ToList();
 
-using var predictor = new ImagePopularityPredictor(@"models\popularity-model.pt",
+using var predictor = new ImagePopularityPredictor(@"models\all_9000_320_a1_e30b256s42_04212210.pt",
     new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384,
@@ -119,7 +122,7 @@ for (var i = 0; i < imagePaths.Count; i++)
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  models\popularity-model.pt \
+  models\all_9000_320_a1_e30b256s42_04212210.pt \
   D:\data\candidates \
   256 \
   384 \
