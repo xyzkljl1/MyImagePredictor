@@ -1,0 +1,23 @@
+# .NET build output
+**/bin/
+**/obj/
+
+# Visual Studio / IDE
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs
+log/
+*.log
+
+# Local model artifacts, weights, and caches
+models/*
+!models/pretrained/
+models/pretrained/*
+!models/pretrained/ResNet152_Weights.IMAGENET1K_V2
+
+# Local experiments / scratch data
+tmp-shortcut-test/

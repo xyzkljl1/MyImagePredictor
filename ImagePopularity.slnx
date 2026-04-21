@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ImagePopularity.Core/ImagePopularity.Core.csproj" />
+    <Project Path="src/ImagePopularity.Demo/ImagePopularity.Demo.csproj" />
+    <Project Path="src/ImagePopularity.Trainer/ImagePopularity.Trainer.csproj" />
+  </Folder>
+</Solution>
