@@ -1,6 +1,7 @@
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using SixLabors.ImageSharp.Formats.Gif;
 
 namespace ImagePopularity.Core;
 
@@ -30,7 +31,7 @@ public static class ImageTensorFactory
             throw new ArgumentOutOfRangeException(nameof(imageSize), imageSize, "Image size must be > 0.");
         }
 
-        using var image = Image.Load<Rgb24>(imagePath);
+        using var image = LoadSingleFrameImage(imagePath);
 
         image.Mutate(x => x.AutoOrient());
 
@@ -144,5 +145,18 @@ public static class ImageTensorFactory
     private static float Normalize(float value, float mean, float std)
     {
         return (value - mean) / std;
+    }
+
+    private static Image<Rgb24> LoadSingleFrameImage(string imagePath)
+    {
+        var format = Image.DetectFormat(imagePath);
+        using var image = Image.Load<Rgb24>(imagePath);
+
+        if (format is GifFormat && image.Frames.Count > 1)
+        {
+            return image.Frames.CloneFrame(0);
+        }
+
+        return image.Clone();
     }
 }

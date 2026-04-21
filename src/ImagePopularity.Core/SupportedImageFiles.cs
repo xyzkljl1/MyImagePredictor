@@ -8,6 +8,7 @@ public static class SupportedImageFiles
         ".jpeg",
         ".png",
         ".bmp",
+        ".gif",
         ".webp",
         ".tif",
         ".tiff"

@@ -21,7 +21,7 @@
 
 - `D:\data\candidates`
 
-支持扩展名：`.jpg .jpeg .png .bmp .webp .tif .tiff`
+支持扩展名：`.jpg .jpeg .png .bmp .gif .webp .tif .tiff`
 
 ## 2. 训练模型
 
@@ -98,7 +98,7 @@ Console.WriteLine($"Popular probability = {probability:P2}");
 using ImagePopularity.Core;
 
 var imagePaths = Directory.EnumerateFiles(@"D:\data\candidates", "*", SearchOption.AllDirectories)
-    .Where(path => new[] { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff" }
+    .Where(path => new[] { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff" }
         .Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
     .OrderBy(path => path)
     .ToList();
