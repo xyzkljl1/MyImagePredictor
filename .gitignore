@@ -21,3 +21,5 @@ models/pretrained/*
 
 # Local experiments / scratch data
 tmp-shortcut-test/
+test.ps1
+train.ps1
