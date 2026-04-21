@@ -32,6 +32,16 @@
 
 ## 2. 训练模型
 
+最小调用命令示例：
+
+```powershell
+dotnet run --project src/ImagePopularity.Trainer -- \
+  --popular-dir D:\data\popular \
+  --unpopular-dir D:\data\unpopular
+```
+
+全参数调用命令示例：
+
 ```powershell
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
@@ -127,6 +137,16 @@ for (var i = 0; i < imagePaths.Count; i++)
 
 ## 4. Demo 目录批量推理
 
+最小调用命令示例：
+
+```powershell
+dotnet run --project src/ImagePopularity.Demo -- \
+  models\all_9000_320_a1_e30b256s42_04212210.pt \
+  D:\data\candidates
+```
+
+全参数调用命令示例：
+
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
   models\all_9000_320_a1_e30b256s42_04212210.pt \
@@ -138,7 +158,15 @@ dotnet run --project src/ImagePopularity.Demo -- \
 ```
 
 输出格式：每行 `文件名<TAB>预测概率`。
-`Demo` 的第 5 个参数是 `enablePreprocessCache`（默认 `false`），第 6 个参数是可选缓存目录。
+
+参数说明（按位置顺序）：
+
+- 第 1 个参数 `modelPath`：模型文件路径，例如 `models\all_9000_320_a1_e30b256s42_04212210.pt`。
+- 第 2 个参数 `imageDirectory`：待批量预测的图片目录；会递归读取子目录中的受支持图片。
+- 第 3 个参数 `batchSize`：批量推理大小，整数，默认 `128`。越大通常吞吐越高，但显存占用也越高。
+- 第 4 个参数 `inferenceImageSize`：推理分辨率，整数，可选；不传时会优先使用模型元数据中的推荐推理尺寸，否则回退到 `320`。
+- 第 5 个参数 `enablePreprocessCache`：是否启用推理预处理缓存，`true/false`，默认 `false`。
+- 第 6 个参数 `preprocessCacheDirectory`：推理预处理缓存目录，可选；不传时默认使用 `models\inference-cache`。
 
 ## 5. CUDA 说明
 
