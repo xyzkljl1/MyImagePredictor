@@ -88,7 +88,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 
 训练会输出：
 
-- 模型权重：自动命名，例如 `models/all_9000_320_a1_e30b256s42_04212210.pt`
+- 模型权重：自动命名，例如 `models/all_9000_320_a1_t045_e30b256s42_04212210.pt`
 - 元信息：与模型同名的 `.meta.json` 文件
 
 `--output-model` 现在只表示“自动命名模型文件名前缀”，不是路径，也不会改变模型输出目录。
@@ -116,6 +116,8 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 - 训练预处理缓存始终启用，默认目录 `models/preprocess-cache`，可通过 `--preprocess-cache-dir` 指定。
 - 训练缓存内容为“增强 + PadResize + Normalize”后的 `float32 CHW` 张量（`train` 子目录）；验证缓存为“PadResize + Normalize”后的张量（`validation` 子目录）。
 - `Trainer` 不再提供 `--inference-image-size` 参数，模型元数据中的“推荐推理尺寸”会自动等于 `--train-image-size`；推理时你仍可在 `Demo/API` 里传入 `inferenceImageSize` 覆盖。
+- 训练时使用固定决策阈值 `0.45` 计算 `Train Acc / Val Acc`，并将该阈值写入模型元数据与自动命名文件名（例如 `t045`）。
+- 已启用 early stopping：默认监控 `Val Loss`，从“解冻骨干后的下一轮”开始生效，`patience=2`，`min_delta=0.01`。
 
 如果你已经有本地预训练权重文件，可指定：
 
@@ -131,7 +133,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 using ImagePopularity.Core;
 
 using var predictor = new ImagePopularityPredictor(
-    modelPath: @"models\all_9000_320_a1_e30b256s42_04212210.pt",
+    modelPath: @"models\all_9000_320_a1_t045_e30b256s42_04212210.pt",
     options: new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384, // 可与训练分辨率不同
@@ -153,7 +155,7 @@ var imagePaths = Directory.EnumerateFiles(@"D:\data\candidates", "*", SearchOpti
     .OrderBy(path => path)
     .ToList();
 
-using var predictor = new ImagePopularityPredictor(@"models\all_9000_320_a1_e30b256s42_04212210.pt",
+using var predictor = new ImagePopularityPredictor(@"models\all_9000_320_a1_t045_e30b256s42_04212210.pt",
     new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384,
@@ -174,7 +176,7 @@ for (var i = 0; i < imagePaths.Count; i++)
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  all_9000_320_a1_e30b256s42_04212210.pt \
+  all_9000_320_a1_t045_e30b256s42_04212210.pt \
   D:\data\candidates
 ```
 
@@ -182,7 +184,7 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  all_9000_320_a1_e30b256s42_04212210.pt \
+  all_9000_320_a1_t045_e30b256s42_04212210.pt \
   D:\data\candidates \
   0 \
   64 \
@@ -192,15 +194,15 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 输出格式：
 
-- 只输出 `预测概率 > 0.5` 的图片：`文件名<TAB>预测概率`
+- 只输出 `预测概率 > 0.45` 的图片：`文件名<TAB>预测概率`
 - 最后额外输出：
   - 所有图片的平均概率
-  - `> 0.5` 的图片数量
+- `> 0.45` 的图片数量
   - 图片总数
 
 参数说明（按位置顺序）：
 
-- 第 1 个参数 `model`：模型文件名，例如 `all_9000_320_a1_e30b256s42_04212210.pt`；Demo 会自动从 `models` 目录下查找该模型文件。
+- 第 1 个参数 `model`：模型文件名，例如 `all_9000_320_a1_t045_e30b256s42_04212210.pt`；Demo 会自动从 `models` 目录下查找该模型文件。
 - 第 2 个参数 `imageDirectory`：待批量预测的图片目录；会递归读取子目录中的受支持图片。
 - 第 3 个参数 `maxPredictionCount`：最大预测数量，整数，可选；如果传入且大于 `0`，则只会从目录中按排序后的顺序取前 `N` 张图片参与预测；如果不传或传入 `0` / 负数，则表示不限制数量。
 - 第 4 个参数 `batchSize`：批量推理大小，整数，默认 `64`。越大通常吞吐越高，但显存占用也越高。

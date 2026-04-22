@@ -316,8 +316,8 @@ Notes:
   If --validation-dir is omitted, validation data is chosen by random
   stratified split controlled by --validation-split.
   The trainer always auto-generates the rest of the model file name using train
-  sample count, image size, augmentation flag, epochs, batch size, seed, and
-  training completion time (month/day/hour/minute).
+  sample count, image size, augmentation flag, decision threshold, epochs,
+  batch size, seed, and training completion time (month/day/hour/minute).
   Preprocess cache is always enabled for training.
   Pretrained backbone is always enabled.
   If --pretrained-weights is omitted, the trainer will auto-download

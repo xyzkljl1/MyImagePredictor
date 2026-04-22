@@ -24,6 +24,8 @@ public sealed class PopularityModelMetadata
 
     public DateTimeOffset TrainedAtUtc { get; init; } = DateTimeOffset.UtcNow;
 
+    public double DecisionThreshold { get; init; } = ImagePopularityTrainingOptions.DefaultDecisionThreshold;
+
     public static string GetMetadataPath(string modelPath)
     {
         return Path.ChangeExtension(modelPath, ".meta.json");

@@ -1,4 +1,5 @@
 using ImagePopularity.Core;
+using System.Globalization;
 
 using var logScope = ExecutionLogScope.Start("demo", args);
 
@@ -22,6 +23,8 @@ if (model.Contains('\\') || model.Contains('/'))
 }
 
 var modelPath = Path.Combine("models", model);
+var metadata = PopularityModelMetadata.TryLoad(modelPath);
+var decisionThreshold = (float)(metadata?.DecisionThreshold ?? ImagePopularityTrainingOptions.DefaultDecisionThreshold);
 var imageDirectory = args[1];
 int? maxPredictionCount = null;
 if (args.Length > 2)
@@ -125,7 +128,7 @@ for (var i = 0; i < imagePaths.Count; i++)
     var probability = probabilities[i];
     probabilitySum += probability;
 
-    if (probability > 0.5f)
+    if (probability > decisionThreshold)
     {
         aboveThresholdCount++;
         Console.WriteLine($"{Path.GetFileName(imagePaths[i])}\t{probability:F6}");
@@ -134,5 +137,5 @@ for (var i = 0; i < imagePaths.Count; i++)
 
 var averageProbability = probabilitySum / imagePaths.Count;
 Console.WriteLine($"Average probability:\t{averageProbability:F6}");
-Console.WriteLine($"> 0.5 count:\t{aboveThresholdCount}");
+Console.WriteLine($"> {decisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)} count:\t{aboveThresholdCount}");
 Console.WriteLine($"Total images:\t{imagePaths.Count}");

@@ -4,6 +4,10 @@ namespace ImagePopularity.Core;
 
 public sealed class ImagePopularityTrainingOptions
 {
+    public const double DefaultDecisionThreshold = 0.45;
+    public const int DefaultEarlyStoppingPatience = 2;
+    public const double DefaultEarlyStoppingMinDelta = 0.01;
+
     public required string PopularDirectory { get; init; }
 
     public required string UnpopularDirectory { get; init; }
@@ -52,6 +56,12 @@ public sealed class ImagePopularityTrainingOptions
 
     public double MinRandomCropScale { get; init; } = 0.85;
 
+    public double DecisionThreshold { get; init; } = DefaultDecisionThreshold;
+
+    public int EarlyStoppingPatience { get; init; } = DefaultEarlyStoppingPatience;
+
+    public double EarlyStoppingMinDelta { get; init; } = DefaultEarlyStoppingMinDelta;
+
     public string BuildInProgressOutputModelPath(int trainSampleCount)
     {
         return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal: null));
@@ -65,9 +75,19 @@ public sealed class ImagePopularityTrainingOptions
     private string BuildGeneratedModelFileName(int trainSampleCount, DateTimeOffset? completedAtLocal)
     {
         var augmentationTag = EnableAugmentation ? "a1" : "a0";
+        var thresholdTag = BuildThresholdTag();
         var timestampSuffix = completedAtLocal is null
             ? string.Empty
             : $"_{completedAtLocal.Value.ToString("MMddHHmm", CultureInfo.InvariantCulture)}";
-        return $"{OutputModelPrefix}{trainSampleCount}_{TrainImageSize}_{augmentationTag}_e{Epochs}b{BatchSize}s{Seed}{timestampSuffix}.pt";
+        return $"{OutputModelPrefix}{trainSampleCount}_{TrainImageSize}_{augmentationTag}_{thresholdTag}_e{Epochs}b{BatchSize}s{Seed}{timestampSuffix}.pt";
+    }
+
+    private string BuildThresholdTag()
+    {
+        var numeric = DecisionThreshold
+            .ToString("0.##", CultureInfo.InvariantCulture)
+            .Replace(".", string.Empty, StringComparison.Ordinal);
+
+        return $"t{numeric}";
     }
 }

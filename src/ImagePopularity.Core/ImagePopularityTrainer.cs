@@ -120,6 +120,7 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine("Use pretrained backbone: true (forced)");
         Console.WriteLine($"Train image size: {_options.TrainImageSize}");
         Console.WriteLine($"Recommended inference image size: {_options.TrainImageSize} (auto = train-image-size)");
+        Console.WriteLine($"Decision threshold: {_options.DecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)}");
         Console.WriteLine($"Data augmentation enabled: {_options.EnableAugmentation}");
         Console.WriteLine($"Pretrained weights: {pretrainedWeightsFile}");
         var trainPopularCount = trainSamples.Count(x => x.Label > 0.5f);
@@ -135,6 +136,10 @@ public sealed class ImagePopularityTrainer
             Console.WriteLine(
                 $"Warning: training set class imbalance is greater than 2x (popular={trainPopularCount}, unpopular={trainUnpopularCount}). This may bias the model toward the larger class.");
         }
+
+        var earlyStoppingStartEpoch = Math.Max(2, _options.FreezeBackboneEpochs + 2);
+        Console.WriteLine(
+            $"Early stopping: enabled (monitor=Val Loss, start epoch {earlyStoppingStartEpoch}, patience {_options.EarlyStoppingPatience}, min delta {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)})");
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(modelOutputPath))!);
 
@@ -158,6 +163,8 @@ public sealed class ImagePopularityTrainer
         var optimizer = CreateOptimizer(model, currentLearningRate);
 
         var bestValidationLoss = double.MaxValue;
+        var bestEarlyStoppingValidationLoss = double.MaxValue;
+        var epochsWithoutMeaningfulImprovement = 0;
         var epochTimings = new List<EpochTiming>(_options.Epochs);
 
         try
@@ -173,7 +180,7 @@ public sealed class ImagePopularityTrainer
                     optimizer.Dispose();
                     currentLearningRate = _options.FineTuneLearningRate;
                     optimizer = CreateOptimizer(model, currentLearningRate);
-                    Console.WriteLine($"Backbone unfrozen at epoch {epoch}. Switched lr to {currentLearningRate:E5}.");
+                    Console.WriteLine($"Backbone unfrozen at epoch {epoch}. Switched lr to {FormatLearningRate(currentLearningRate)}.");
                 }
 
                 var trainMetrics = RunEpoch(model, trainSamples, optimizer, isTraining: true, epoch);
@@ -215,6 +222,7 @@ public sealed class ImagePopularityTrainer
                         Epochs = epoch,
                         TrainSamples = trainSamples.Count,
                         ValidationSamples = validationSamples.Count,
+                        DecisionThreshold = _options.DecisionThreshold,
                         TrainedDevice = _device.type.ToString(),
                         TrainedAtUtc = DateTimeOffset.UtcNow
                     };
@@ -222,6 +230,22 @@ public sealed class ImagePopularityTrainer
                     metadata.Save(modelOutputPath);
 
                     Console.WriteLine($"Saved best model: {modelOutputPath} (Val Loss={bestValidationLoss:F4})");
+                }
+
+                if (valMetrics.Loss < bestEarlyStoppingValidationLoss - _options.EarlyStoppingMinDelta)
+                {
+                    bestEarlyStoppingValidationLoss = valMetrics.Loss;
+                    epochsWithoutMeaningfulImprovement = 0;
+                }
+                else if (_options.EarlyStoppingPatience > 0 && epoch >= earlyStoppingStartEpoch)
+                {
+                    epochsWithoutMeaningfulImprovement++;
+                    if (epochsWithoutMeaningfulImprovement >= _options.EarlyStoppingPatience)
+                    {
+                        Console.WriteLine(
+                            $"Early stopping triggered at epoch {epoch}: no Val Loss improvement >= {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)} for {_options.EarlyStoppingPatience} epoch(s).");
+                        break;
+                    }
                 }
             }
 
@@ -338,7 +362,7 @@ public sealed class ImagePopularityTrainer
                 totalLoss += perSampleLoss.sum().item<float>();
 
                 using var probabilities = torch.sigmoid(logits);
-                using var predictions = torch.ge(probabilities, 0.5);
+                using var predictions = torch.ge(probabilities, _options.DecisionThreshold);
                 using var expected = torch.ge(labels, 0.5);
                 using var correct = torch.eq(predictions, expected);
 
