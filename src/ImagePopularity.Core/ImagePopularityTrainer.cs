@@ -124,6 +124,12 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine($"Popular validation samples: {validationPopularCount}, Unpopular validation samples: {validationUnpopularCount}");
         Console.WriteLine($"Train samples: {trainSamples.Count}, Validation samples: {validationSamples.Count}");
 
+        if (HasMoreThanTwoTimesImbalance(trainPopularCount, trainUnpopularCount))
+        {
+            Console.WriteLine(
+                $"Warning: training set class imbalance is greater than 2x (popular={trainPopularCount}, unpopular={trainUnpopularCount}). This may bias the model toward the larger class.");
+        }
+
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(modelOutputPath))!);
 
         using var model = new PopularityModel(
@@ -730,6 +736,18 @@ public sealed class ImagePopularityTrainer
         }
 
         return normalized;
+    }
+
+    private static bool HasMoreThanTwoTimesImbalance(int firstCount, int secondCount)
+    {
+        if (firstCount <= 0 || secondCount <= 0)
+        {
+            return false;
+        }
+
+        var larger = Math.Max(firstCount, secondCount);
+        var smaller = Math.Min(firstCount, secondCount);
+        return larger > smaller * 2;
     }
 
     public void Dispose()
