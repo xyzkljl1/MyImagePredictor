@@ -92,9 +92,39 @@ using var predictor = new ImagePopularityPredictor(modelPath, new ImagePopularit
         : preprocessCacheDirectory
 });
 
-var probabilities = predictor.PredictProbabilities(imagePaths, batchSize);
+var probabilities = new List<float>(imagePaths.Count);
+using var progress = new ConsoleProgressBar("Predict", imagePaths.Count);
+
+for (var start = 0; start < imagePaths.Count; start += batchSize)
+{
+    var currentBatch = Math.Min(batchSize, imagePaths.Count - start);
+    var batchImagePaths = imagePaths
+        .Skip(start)
+        .Take(currentBatch)
+        .ToArray();
+    var batchProbabilities = predictor.PredictProbabilities(batchImagePaths, currentBatch);
+    probabilities.AddRange(batchProbabilities);
+    progress.Report(start + currentBatch);
+}
+
+progress.Complete();
+
+double probabilitySum = 0;
+var aboveThresholdCount = 0;
 
 for (var i = 0; i < imagePaths.Count; i++)
 {
-    Console.WriteLine($"{Path.GetFileName(imagePaths[i])}\t{probabilities[i]:F6}");
+    var probability = probabilities[i];
+    probabilitySum += probability;
+
+    if (probability > 0.5f)
+    {
+        aboveThresholdCount++;
+        Console.WriteLine($"{Path.GetFileName(imagePaths[i])}\t{probability:F6}");
+    }
 }
+
+var averageProbability = probabilitySum / imagePaths.Count;
+Console.WriteLine($"Average probability:\t{averageProbability:F6}");
+Console.WriteLine($"> 0.5 count:\t{aboveThresholdCount}");
+Console.WriteLine($"Total images:\t{imagePaths.Count}");

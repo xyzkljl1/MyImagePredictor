@@ -40,12 +40,32 @@ dotnet run --project src/ImagePopularity.Trainer -- \
   --unpopular-dir D:\data\unpopular
 ```
 
+使用显式验证集子目录的最小调用命令示例：
+
+```powershell
+dotnet run --project src/ImagePopularity.Trainer -- \
+  --popular-dir D:\data\popular \
+  --unpopular-dir D:\data\unpopular \
+  --validation-dir validation
+```
+
+使用多个显式验证集子目录的示例：
+
+```powershell
+dotnet run --project src/ImagePopularity.Trainer -- \
+  --popular-dir D:\data\popular \
+  --unpopular-dir D:\data\unpopular \
+  --validation-dir validation \
+  --validation-dir holdout
+```
+
 全参数调用命令示例：
 
 ```powershell
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
   --unpopular-dir D:\data\unpopular \
+  --validation-dir validation \
   --output-model all_ \
   --preprocess-cache-dir models\preprocess-cache \
   --backbone resnet152 \
@@ -73,6 +93,19 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 
 `--output-model` 现在只表示“自动命名模型文件名前缀”，不是路径，也不会改变模型输出目录。
 例如传入 `all_` 后，程序会在 `models` 目录下生成以 `all_` 开头的自动命名模型文件。
+
+验证集选择说明：
+
+- 不传 `--validation-dir` 时：程序会继续使用原来的随机分层切分，按 `--validation-split` 从正负两类样本中各自抽取一部分作为验证集。
+- 传入 `--validation-dir` 时：它表示相对于 `--popular-dir` 和 `--unpopular-dir` 的一个或多个同名验证子目录；可以重复传入多个 `--validation-dir`，也可以在一个参数里用 `,` 或 `;` 分隔多个目录名。
+- 例如传入 `--validation-dir validation` 后，程序会把：
+  - `D:\data\popular\validation\**`
+  - `D:\data\unpopular\validation\**`
+  中的图片用作验证集。
+- 如果同时传入多个验证子目录，程序会把所有**实际存在**的验证子目录里的图片合并起来作为验证集。
+- 这些验证子目录中的图片会自动从训练集中排除，所以即使验证集目录嵌在训练目录内部，也不会被同时用于训练。
+- 如果其中一个或多个验证子目录不存在，程序会直接忽略这些不存在的目录，不会报错，也不会回退到随机切分。
+- 程序最终只按“所有实际存在的验证子目录中的图片总数”判断是否足够；如果这个总数小于 `总图片数 × validation-split`，程序会直接报错并停止训练。
 
 预训练骨干微调说明：
 
@@ -157,7 +190,13 @@ dotnet run --project src/ImagePopularity.Demo -- \
   models\inference-cache
 ```
 
-输出格式：每行 `文件名<TAB>预测概率`。
+输出格式：
+
+- 只输出 `预测概率 > 0.5` 的图片：`文件名<TAB>预测概率`
+- 最后额外输出：
+  - 所有图片的平均概率
+  - `> 0.5` 的图片数量
+  - 图片总数
 
 参数说明（按位置顺序）：
 

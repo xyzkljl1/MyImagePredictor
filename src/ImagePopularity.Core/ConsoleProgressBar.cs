@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Globalization;
 
-namespace ImagePopularity.Trainer;
+namespace ImagePopularity.Core;
 
-internal sealed class ConsoleProgressBar : IDisposable
+public sealed class ConsoleProgressBar : IDisposable
 {
     private readonly string _label;
     private readonly int _total;

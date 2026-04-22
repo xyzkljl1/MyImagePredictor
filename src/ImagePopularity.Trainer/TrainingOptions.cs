@@ -17,6 +17,7 @@ internal sealed class TrainingOptions
         "learning-rate",
         "fine-tune-learning-rate",
         "weight-decay",
+        "validation-dir",
         "validation-split",
         "seed",
         "max-samples-per-class",
@@ -52,6 +53,8 @@ internal sealed class TrainingOptions
 
     public double WeightDecay { get; init; } = 1e-4;
 
+    public IReadOnlyList<string> ValidationDirectories { get; init; } = Array.Empty<string>();
+
     public double ValidationSplit { get; init; } = 0.1;
 
     public int Seed { get; init; } = 42;
@@ -86,6 +89,7 @@ internal sealed class TrainingOptions
         }
 
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var validationDirectoryValues = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -102,6 +106,12 @@ internal sealed class TrainingOptions
             {
                 value = args[i + 1];
                 i++;
+            }
+
+            if (string.Equals(key, "validation-dir", StringComparison.OrdinalIgnoreCase))
+            {
+                validationDirectoryValues.Add(value);
+                continue;
             }
 
             map[key] = value;
@@ -163,6 +173,7 @@ internal sealed class TrainingOptions
         var learningRate = ReadDouble(map, "learning-rate", 3e-4);
         var fineTuneLearningRate = ReadDouble(map, "fine-tune-learning-rate", 5e-5);
         var weightDecay = ReadDouble(map, "weight-decay", 1e-4);
+        var validationDirectories = ParseValidationDirectories(validationDirectoryValues);
         var validationSplit = ReadDouble(map, "validation-split", 0.1);
         var seed = ReadInt(map, "seed", 42);
         var maxSamplesPerClass = ReadInt(map, "max-samples-per-class", 0);
@@ -193,6 +204,7 @@ internal sealed class TrainingOptions
             LearningRate = learningRate,
             FineTuneLearningRate = fineTuneLearningRate,
             WeightDecay = weightDecay,
+            ValidationDirectories = validationDirectories,
             ValidationSplit = validationSplit,
             Seed = seed,
             MaxSamplesPerClass = maxSamplesPerClass,
@@ -284,6 +296,7 @@ Usage:
     [--learning-rate 0.0003] \
     [--fine-tune-learning-rate 0.00005] \
     [--weight-decay 0.0001] \
+    [--validation-dir validation] \
     [--validation-split 0.1] \
     [--max-samples-per-class 0] \
     [--seed 42]
@@ -293,6 +306,15 @@ Notes:
   --unpopular-dir should contain only unpopular images (label=0).
   --output-model is only a file-name prefix, not a path. It must not contain
   '\' or '/'. Generated models are always written under models/.
+  --validation-dir, when provided, is treated as one or more relative
+  validation subdirectories under both --popular-dir and --unpopular-dir.
+  Pass it multiple times or separate names with ',' / ';'. Images under all
+  existing validation subdirectories are used as validation data and excluded
+  from the training set. Missing validation subdirectories are ignored. The
+  combined explicit validation image count must also be at least
+  total-images * validation-split.
+  If --validation-dir is omitted, validation data is chosen by random
+  stratified split controlled by --validation-split.
   The trainer always auto-generates the rest of the model file name using train
   sample count, image size, augmentation flag, epochs, batch size, seed, and
   training completion time (month/day/hour/minute).
@@ -346,6 +368,39 @@ Notes:
         }
 
         return prefix;
+    }
+
+    private static IReadOnlyList<string> ParseValidationDirectories(IEnumerable<string> values)
+    {
+        var directories = new List<string>();
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var segments = value.Split([',', ';'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            foreach (var segment in segments)
+            {
+                var directory = segment.Trim(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
+
+                if (Path.IsPathRooted(directory))
+                {
+                    throw new ArgumentException("validation-dir must be a relative subdirectory under both popular-dir and unpopular-dir.");
+                }
+
+                directories.Add(directory);
+            }
+        }
+
+        return directories
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static int ReadInt(Dictionary<string, string> map, string key, int fallback)

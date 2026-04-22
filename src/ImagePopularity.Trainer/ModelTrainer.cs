@@ -77,13 +77,12 @@ internal sealed class ModelTrainer
         var totalStopwatch = Stopwatch.StartNew();
         var bestModelSaved = false;
 
-        var allSamples = LoadSamples();
-        if (allSamples.Count < 100)
+        var (trainSamples, validationSamples) = LoadDatasets();
+        if (trainSamples.Count + validationSamples.Count < 100)
         {
             throw new InvalidOperationException("Not enough labeled images. Need at least 100 samples to train a reliable model.");
         }
 
-        var (trainSamples, validationSamples) = SplitStratified(allSamples, _options.ValidationSplit);
         var pretrainedWeightsFile = PretrainedWeightsResolver.Resolve(_options);
         var modelOutputPath = BuildTemporaryAutoOutputModelPath(_options.BuildInProgressOutputModelPath(trainSamples.Count));
 
@@ -369,7 +368,18 @@ internal sealed class ModelTrainer
         }
     }
 
-    private IReadOnlyList<LabeledImageSample> LoadSamples()
+    private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) LoadDatasets()
+    {
+        if (_options.ValidationDirectories.Count == 0)
+        {
+            var allSamples = LoadSamplesForRandomSplit();
+            return SplitStratified(allSamples, _options.ValidationSplit);
+        }
+
+        return LoadSamplesFromExplicitValidationDirectories(_options.ValidationDirectories);
+    }
+
+    private IReadOnlyList<LabeledImageSample> LoadSamplesForRandomSplit()
     {
         var popular = EnumerateImages(_options.PopularDirectory)
             .Select(path => new LabeledImageSample(path, 1f))
@@ -399,15 +409,108 @@ internal sealed class ModelTrainer
 
         Console.WriteLine($"Popular images: {popular.Count}");
         Console.WriteLine($"Unpopular images: {unpopular.Count}");
+        Console.WriteLine($"Validation selection: random stratified split ({_options.ValidationSplit:P0})");
 
         return [.. popular, .. unpopular];
     }
 
-    private IEnumerable<string> EnumerateImages(string directory)
+    private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) LoadSamplesFromExplicitValidationDirectories(IReadOnlyList<string> validationDirectories)
+    {
+        var popularValidationDirectories = ResolveExistingValidationDirectories(_options.PopularDirectory, validationDirectories);
+        var unpopularValidationDirectories = ResolveExistingValidationDirectories(_options.UnpopularDirectory, validationDirectories);
+
+        var trainPopular = EnumerateImages(_options.PopularDirectory, excludedDirectories: popularValidationDirectories)
+            .Select(path => new LabeledImageSample(path, 1f))
+            .ToList();
+        var trainUnpopular = EnumerateImages(_options.UnpopularDirectory, excludedDirectories: unpopularValidationDirectories)
+            .Select(path => new LabeledImageSample(path, 0f))
+            .ToList();
+
+        if (_options.MaxSamplesPerClass > 0)
+        {
+            trainPopular = trainPopular
+                .OrderBy(_ => _random.Next())
+                .Take(_options.MaxSamplesPerClass)
+                .ToList();
+
+            trainUnpopular = trainUnpopular
+                .OrderBy(_ => _random.Next())
+                .Take(_options.MaxSamplesPerClass)
+                .ToList();
+        }
+
+        var validationPopular = EnumerateImagesFromDirectories(popularValidationDirectories)
+            .Select(path => new LabeledImageSample(path, 1f))
+            .ToList();
+        var validationUnpopular = EnumerateImagesFromDirectories(unpopularValidationDirectories)
+            .Select(path => new LabeledImageSample(path, 0f))
+            .ToList();
+
+        if (trainPopular.Count == 0 || trainUnpopular.Count == 0)
+        {
+            throw new InvalidOperationException("Explicit validation directories left no training images in one or both classes.");
+        }
+
+        var validationCount = validationPopular.Count + validationUnpopular.Count;
+        var totalCount = trainPopular.Count + trainUnpopular.Count + validationCount;
+        var minimumValidationCount = (int)Math.Ceiling(totalCount * _options.ValidationSplit);
+        if (validationCount < minimumValidationCount)
+        {
+            throw new InvalidOperationException(
+                $"Explicit validation set is too small: found {validationCount} image(s), but at least {minimumValidationCount} are required by validation-split={_options.ValidationSplit.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}.");
+        }
+
+        Console.WriteLine($"Popular train images: {trainPopular.Count}");
+        Console.WriteLine($"Unpopular train images: {trainUnpopular.Count}");
+        Console.WriteLine($"Popular validation images: {validationPopular.Count}");
+        Console.WriteLine($"Unpopular validation images: {validationUnpopular.Count}");
+        Console.WriteLine($"Validation selection: explicit subdirectories [{string.Join(", ", validationDirectories)}]");
+        Console.WriteLine($"Existing popular validation directories: {FormatDirectoryList(popularValidationDirectories)}");
+        Console.WriteLine($"Existing unpopular validation directories: {FormatDirectoryList(unpopularValidationDirectories)}");
+
+        var train = trainPopular
+            .Concat(trainUnpopular)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+        var validation = validationPopular
+            .Concat(validationUnpopular)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+
+        return (train, validation);
+    }
+
+    private static IEnumerable<string> EnumerateImagesFromDirectories(IReadOnlyList<string> directories)
+    {
+        return directories
+            .SelectMany(directory => EnumerateImagesStatic(directory))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private IEnumerable<string> EnumerateImages(string directory, IReadOnlyList<string>? excludedDirectories = null)
     {
         if (!Directory.Exists(directory))
         {
             throw new DirectoryNotFoundException($"Directory not found: {directory}");
+        }
+
+        var normalizedExcluded = excludedDirectories?
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizeDirectoryPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return Directory
+            .EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+            .Where(SupportedImageFiles.IsSupported)
+            .Where(path => normalizedExcluded is null || !IsUnderAnyDirectory(path, normalizedExcluded));
+    }
+
+    private static IEnumerable<string> EnumerateImagesStatic(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return Array.Empty<string>();
         }
 
         return Directory
@@ -532,6 +635,86 @@ internal sealed class ModelTrainer
 
         var destinationMetadataPath = PopularityModelMetadata.GetMetadataPath(destinationModelPath);
         File.Move(sourceMetadataPath, destinationMetadataPath, overwrite: true);
+    }
+
+    private static IReadOnlyList<string> ResolveExistingValidationDirectories(string classRoot, IReadOnlyList<string> validationDirectories)
+    {
+        var existingDirectories = new List<string>();
+        foreach (var validationDirectory in validationDirectories)
+        {
+            var resolved = TryResolveValidationDirectory(classRoot, validationDirectory);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                existingDirectories.Add(resolved);
+            }
+        }
+
+        return existingDirectories
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string? TryResolveValidationDirectory(string classRoot, string validationDirectory)
+    {
+        var normalizedRoot = NormalizeDirectoryPath(classRoot);
+        var resolved = NormalizeDirectoryPath(Path.GetFullPath(Path.Combine(normalizedRoot, validationDirectory)));
+
+        if (!IsUnderDirectory(resolved, normalizedRoot))
+        {
+            throw new InvalidOperationException($"validation-dir must stay inside class root. Root={classRoot}, validation-dir={validationDirectory}");
+        }
+
+        if (!Directory.Exists(resolved))
+        {
+            return null;
+        }
+
+        return resolved;
+    }
+
+    private static string FormatDirectoryList(IReadOnlyList<string> directories)
+    {
+        return directories.Count == 0
+            ? "(none)"
+            : string.Join(", ", directories);
+    }
+
+    private static bool IsUnderAnyDirectory(string filePath, IReadOnlyList<string> normalizedDirectories)
+    {
+        foreach (var directory in normalizedDirectories)
+        {
+            if (IsUnderDirectory(filePath, directory))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsUnderDirectory(string path, string normalizedDirectory)
+    {
+        var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (OperatingSystem.IsWindows())
+        {
+            normalizedPath = normalizedPath.ToUpperInvariant();
+        }
+
+        return normalizedPath.Length > normalizedDirectory.Length &&
+               normalizedPath.StartsWith(normalizedDirectory, StringComparison.OrdinalIgnoreCase) &&
+               (normalizedPath[normalizedDirectory.Length] == Path.DirectorySeparatorChar ||
+                normalizedPath[normalizedDirectory.Length] == Path.AltDirectorySeparatorChar);
+    }
+
+    private static string NormalizeDirectoryPath(string directory)
+    {
+        var normalized = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (OperatingSystem.IsWindows())
+        {
+            normalized = normalized.ToUpperInvariant();
+        }
+
+        return normalized;
     }
 
     public void Dispose()
