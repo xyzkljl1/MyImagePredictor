@@ -4,28 +4,53 @@ using var logScope = ExecutionLogScope.Start("demo", args);
 
 if (args.Length < 2)
 {
-    Console.WriteLine("Usage: dotnet run --project src/ImagePopularity.Demo -- <modelPath> <imageDirectory> [batchSize] [inferenceImageSize] [enablePreprocessCache] [preprocessCacheDirectory]");
+    Console.WriteLine("Usage: dotnet run --project src/ImagePopularity.Demo -- <model> <imageDirectory> [maxPredictionCount] [batchSize] [inferenceImageSize] [enablePreprocessCache]");
     return;
 }
 
-var modelPath = args[0];
+var model = args[0];
+if (string.IsNullOrWhiteSpace(model))
+{
+    Console.WriteLine("First argument model cannot be empty.");
+    return;
+}
+
+if (model.Contains('\\') || model.Contains('/'))
+{
+    Console.WriteLine("First argument must be only a model file name under the models directory, not a path.");
+    return;
+}
+
+var modelPath = Path.Combine("models", model);
 var imageDirectory = args[1];
-var batchSize = 128;
+int? maxPredictionCount = null;
 if (args.Length > 2)
 {
-    if (!int.TryParse(args[2], out batchSize))
+    if (!int.TryParse(args[2], out var parsedMaxPredictionCount))
     {
-        Console.WriteLine("Third argument must be batchSize (integer). Device argument has been removed; CUDA is always used.");
+        Console.WriteLine("Third argument must be maxPredictionCount (integer).");
+        return;
+    }
+
+    maxPredictionCount = parsedMaxPredictionCount;
+}
+
+var batchSize = 64;
+if (args.Length > 3)
+{
+    if (!int.TryParse(args[3], out batchSize))
+    {
+        Console.WriteLine("Fourth argument must be batchSize (integer). Device argument has been removed; CUDA is always used.");
         return;
     }
 }
 
 int? inferenceImageSize = null;
-if (args.Length > 3)
+if (args.Length > 4)
 {
-    if (!int.TryParse(args[3], out var parsedInferenceImageSize))
+    if (!int.TryParse(args[4], out var parsedInferenceImageSize))
     {
-        Console.WriteLine("Fourth argument must be inferenceImageSize (integer).");
+        Console.WriteLine("Fifth argument must be inferenceImageSize (integer).");
         return;
     }
 
@@ -33,24 +58,19 @@ if (args.Length > 3)
 }
 
 var enablePreprocessCache = false;
-if (args.Length > 4)
+if (args.Length > 5)
 {
-    if (!bool.TryParse(args[4], out enablePreprocessCache))
+    if (!bool.TryParse(args[5], out enablePreprocessCache))
     {
-        Console.WriteLine("Fifth argument must be enablePreprocessCache (true/false).");
+        Console.WriteLine("Sixth argument must be enablePreprocessCache (true/false).");
         return;
     }
 }
 
-string? preprocessCacheDirectory = null;
-if (args.Length > 5)
+if (!File.Exists(modelPath))
 {
-    preprocessCacheDirectory = args[5];
-    if (string.IsNullOrWhiteSpace(preprocessCacheDirectory))
-    {
-        Console.WriteLine("Sixth argument preprocessCacheDirectory cannot be empty.");
-        return;
-    }
+    Console.WriteLine($"Model not found under models directory: {modelPath}");
+    return;
 }
 
 if (!Directory.Exists(imageDirectory))
@@ -75,6 +95,7 @@ var imagePaths = Directory
     .EnumerateFiles(imageDirectory, "*", SearchOption.AllDirectories)
     .Where(SupportedImageFiles.IsSupported)
     .OrderBy(path => path)
+    .Take(maxPredictionCount is > 0 ? maxPredictionCount.Value : int.MaxValue)
     .ToList();
 
 if (imagePaths.Count == 0)
@@ -86,10 +107,7 @@ if (imagePaths.Count == 0)
 using var predictor = new ImagePopularityPredictor(modelPath, new ImagePopularityPredictorOptions
 {
     InferenceImageSize = inferenceImageSize,
-    EnablePreprocessCache = enablePreprocessCache,
-    PreprocessCacheDirectory = string.IsNullOrWhiteSpace(preprocessCacheDirectory)
-        ? Path.Combine("models", "inference-cache")
-        : preprocessCacheDirectory
+    EnablePreprocessCache = enablePreprocessCache
 });
 
 var probabilities = new List<float>(imagePaths.Count);

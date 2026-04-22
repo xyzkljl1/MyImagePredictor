@@ -174,7 +174,7 @@ for (var i = 0; i < imagePaths.Count; i++)
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  models\all_9000_320_a1_e30b256s42_04212210.pt \
+  all_9000_320_a1_e30b256s42_04212210.pt \
   D:\data\candidates
 ```
 
@@ -182,12 +182,12 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  models\all_9000_320_a1_e30b256s42_04212210.pt \
+  all_9000_320_a1_e30b256s42_04212210.pt \
   D:\data\candidates \
-  256 \
-  384 \
-  true \
-  models\inference-cache
+  0 \
+  64 \
+  320 \
+  false
 ```
 
 输出格式：
@@ -200,12 +200,12 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 参数说明（按位置顺序）：
 
-- 第 1 个参数 `modelPath`：模型文件路径，例如 `models\all_9000_320_a1_e30b256s42_04212210.pt`。
+- 第 1 个参数 `model`：模型文件名，例如 `all_9000_320_a1_e30b256s42_04212210.pt`；Demo 会自动从 `models` 目录下查找该模型文件。
 - 第 2 个参数 `imageDirectory`：待批量预测的图片目录；会递归读取子目录中的受支持图片。
-- 第 3 个参数 `batchSize`：批量推理大小，整数，默认 `128`。越大通常吞吐越高，但显存占用也越高。
-- 第 4 个参数 `inferenceImageSize`：推理分辨率，整数，可选；不传时会优先使用模型元数据中的推荐推理尺寸，否则回退到 `320`。
-- 第 5 个参数 `enablePreprocessCache`：是否启用推理预处理缓存，`true/false`，默认 `false`。
-- 第 6 个参数 `preprocessCacheDirectory`：推理预处理缓存目录，可选；不传时默认使用 `models\inference-cache`。
+- 第 3 个参数 `maxPredictionCount`：最大预测数量，整数，可选；如果传入且大于 `0`，则只会从目录中按排序后的顺序取前 `N` 张图片参与预测；如果不传或传入 `0` / 负数，则表示不限制数量。
+- 第 4 个参数 `batchSize`：批量推理大小，整数，默认 `64`。越大通常吞吐越高，但显存占用也越高。
+- 第 5 个参数 `inferenceImageSize`：推理分辨率，整数，可选；不传时会优先使用模型元数据中的推荐推理尺寸，否则回退到 `320`。
+- 第 6 个参数 `enablePreprocessCache`：是否启用推理预处理缓存，`true/false`，默认 `false`。启用时固定使用默认推理缓存目录 `models\inference-cache`。
 
 ## 5. CUDA 说明
 
