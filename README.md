@@ -111,13 +111,15 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 
 - 预训练骨干已强制开启，会自动下载与 `--backbone` 对应的 TorchSharp 预训练权重（缓存到 `models/pretrained`）。
 - 前 `--freeze-backbone-epochs` 个 epoch 冻结骨干网络，只训练分类头，先稳定收敛。
-- 之后自动解冻骨干，并切到 `--fine-tune-learning-rate` 做全网微调。
+- 之后改为**渐进解冻**：每个 epoch 逐步多解冻一个 backbone stage，而不是一次性全部解冻。
+- 解冻后的微调会使用**分层学习率**：分类头学习率最高，越靠前的 backbone stage 学习率缩放越小。
 - 当前默认骨干为 `resnet152`。
 - 训练预处理缓存始终启用，默认目录 `models/preprocess-cache`，可通过 `--preprocess-cache-dir` 指定。
 - 训练缓存内容为“增强 + PadResize + Normalize”后的 `float32 CHW` 张量（`train` 子目录）；验证缓存为“PadResize + Normalize”后的张量（`validation` 子目录）。
 - `Trainer` 不再提供 `--inference-image-size` 参数，模型元数据中的“推荐推理尺寸”会自动等于 `--train-image-size`；推理时你仍可在 `Demo/API` 里传入 `inferenceImageSize` 覆盖。
 - 训练时使用固定决策阈值 `0.45` 计算 `Train Acc / Val Acc`，并将该阈值写入模型元数据与自动命名文件名（例如 `t045`）。
 - 已启用 early stopping：默认监控 `Val Loss`，从“解冻骨干后的下一轮”开始生效，`patience=2`，`min_delta=0.01`。
+- 训练 batch 使用**平衡 P/U 采样**：每个训练 batch 会尽量保持 `popular/unpopular` 接近 1:1；如果某一类样本较少，会在该 epoch 内对少数类做循环重采样。
 
 如果你已经有本地预训练权重文件，可指定：
 
@@ -137,7 +139,8 @@ using var predictor = new ImagePopularityPredictor(
     options: new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384, // 可与训练分辨率不同
-        EnablePreprocessCache = false // 默认 false，推理缓存按需开启
+        EnablePreprocessCache = false, // 默认 false，推理缓存按需开启
+        EnableTta = true // 默认 true，使用原图 + 水平翻转做 TTA 平均
     });
 
 float probability = predictor.PredictProbability(@"D:\data\candidates\sample.jpg");
@@ -160,7 +163,8 @@ using var predictor = new ImagePopularityPredictor(@"models\all_9000_320_a1_t045
     {
         InferenceImageSize = 384,
         EnablePreprocessCache = true,
-        PreprocessCacheDirectory = @"models\inference-cache"
+        PreprocessCacheDirectory = @"models\inference-cache",
+        EnableTta = true
     });
 
 var probabilities = predictor.PredictProbabilities(imagePaths, batchSize: 256);
@@ -194,10 +198,10 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 输出格式：
 
-- 只输出 `预测概率 > 0.45` 的图片：`文件名<TAB>预测概率`
+- 只输出 `预测概率 > 模型阈值` 的图片：`文件名<TAB>预测概率`
 - 最后额外输出：
   - 所有图片的平均概率
-- `> 0.45` 的图片数量
+  - `> 模型阈值` 的图片数量
   - 图片总数
 
 参数说明（按位置顺序）：
@@ -208,6 +212,7 @@ dotnet run --project src/ImagePopularity.Demo -- \
 - 第 4 个参数 `batchSize`：批量推理大小，整数，默认 `64`。越大通常吞吐越高，但显存占用也越高。
 - 第 5 个参数 `inferenceImageSize`：推理分辨率，整数，可选；不传时会优先使用模型元数据中的推荐推理尺寸，否则回退到 `320`。
 - 第 6 个参数 `enablePreprocessCache`：是否启用推理预处理缓存，`true/false`，默认 `false`。启用时固定使用默认推理缓存目录 `models\inference-cache`。
+- Demo 推理默认启用 TTA（原图 + 水平翻转，两次前向后取平均），因此会比单次前向更慢一些，但通常能让概率更稳。
 
 ## 5. CUDA 说明
 

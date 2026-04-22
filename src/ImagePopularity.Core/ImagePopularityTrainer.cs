@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using TorchSharp;
 using static TorchSharp.torch;
 
@@ -80,6 +81,8 @@ public sealed class ImagePopularityTrainer
         var totalStopwatch = Stopwatch.StartNew();
         var bestModelSaved = false;
         var bestModelPromoted = false;
+        ExceptionDispatchInfo? capturedException = null;
+        string? pendingFinalOutputPath = null;
 
         var (trainSamples, validationSamples) = LoadDatasets();
         if (trainSamples.Count + validationSamples.Count < 100)
@@ -123,6 +126,8 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine($"Decision threshold: {_options.DecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)}");
         Console.WriteLine($"Data augmentation enabled: {_options.EnableAugmentation}");
         Console.WriteLine($"Pretrained weights: {pretrainedWeightsFile}");
+        Console.WriteLine("Training batch strategy: balanced P/U batches (minority oversampled when needed).");
+        Console.WriteLine("Fine-tune strategy: progressive backbone unfreezing with layer-wise learning-rate scaling.");
         var trainPopularCount = trainSamples.Count(x => x.Label > 0.5f);
         var trainUnpopularCount = trainSamples.Count - trainPopularCount;
         var validationPopularCount = validationSamples.Count(x => x.Label > 0.5f);
@@ -143,144 +148,212 @@ public sealed class ImagePopularityTrainer
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(modelOutputPath))!);
 
-        using var model = new PopularityModel(
-            new PopularityModelConfig { Backbone = _options.Backbone },
-            backboneWeightsFile: pretrainedWeightsFile,
-            device: CPU);
-        model.to(_device);
-
-        if (_options.FreezeBackboneEpochs > 0)
-        {
-            model.SetBackboneTrainable(false);
-            Console.WriteLine($"Backbone frozen for first {_options.FreezeBackboneEpochs} epoch(s).");
-        }
-        else
-        {
-            model.SetBackboneTrainable(true);
-        }
-
-        var currentLearningRate = _options.LearningRate;
-        var optimizer = CreateOptimizer(model, currentLearningRate);
-
         var bestValidationLoss = double.MaxValue;
         var bestEarlyStoppingValidationLoss = double.MaxValue;
         var epochsWithoutMeaningfulImprovement = 0;
         var epochTimings = new List<EpochTiming>(_options.Epochs);
 
-        try
         {
-            for (var epoch = 1; epoch <= _options.Epochs; epoch++)
+            using var model = new PopularityModel(
+                new PopularityModelConfig { Backbone = _options.Backbone },
+                backboneWeightsFile: pretrainedWeightsFile,
+                device: CPU);
+            model.to(_device);
+
+            if (_options.FreezeBackboneEpochs > 0)
             {
-                ThrowIfCancellationRequested();
-                var epochStopwatch = Stopwatch.StartNew();
-                if (_options.FreezeBackboneEpochs > 0 &&
-                    epoch == _options.FreezeBackboneEpochs + 1)
-                {
-                    model.SetBackboneTrainable(true);
-                    optimizer.Dispose();
-                    currentLearningRate = _options.FineTuneLearningRate;
-                    optimizer = CreateOptimizer(model, currentLearningRate);
-                    Console.WriteLine($"Backbone unfrozen at epoch {epoch}. Switched lr to {FormatLearningRate(currentLearningRate)}.");
-                }
-
-                var trainMetrics = RunEpoch(model, trainSamples, optimizer, isTraining: true, epoch);
-                ThrowIfCancellationRequested();
-                var valMetrics = RunEpoch(model, validationSamples, optimizer: null, isTraining: false, epoch);
-                epochStopwatch.Stop();
-
-                epochTimings.Add(new EpochTiming(
-                    epoch,
-                    trainMetrics.Duration,
-                    valMetrics.Duration,
-                    epochStopwatch.Elapsed));
-
-                var validationBreakdownText = valMetrics.HasClassBreakdown
-                    ? $" | L(P/U) = {valMetrics.PopularLoss:F4}/{valMetrics.UnpopularLoss:F4}, A(P/U) = {valMetrics.PopularAccuracy:P2}/{valMetrics.UnpopularAccuracy:P2}"
-                    : string.Empty;
-
-                Console.WriteLine(
-                    $"Epoch {epoch}/{_options.Epochs} | " +
-                    $"LR={FormatLearningRate(currentLearningRate)} | " +
-                    $"Train Loss={trainMetrics.Loss:F4}, Train Acc={trainMetrics.Accuracy:P2} | " +
-                    $"Val Loss={valMetrics.Loss:F4}, Val Acc={valMetrics.Accuracy:P2}" +
-                    $"{validationBreakdownText} | " +
-                    $"Time(T/V/E)={FormatElapsed(trainMetrics.Duration)}/{FormatElapsed(valMetrics.Duration)}/{FormatElapsed(epochStopwatch.Elapsed)}");
-
-                if (valMetrics.Loss < bestValidationLoss)
-                {
-                    bestValidationLoss = valMetrics.Loss;
-                    model.save(modelOutputPath);
-                    bestModelSaved = true;
-
-                    var metadata = new PopularityModelMetadata
-                    {
-                        TrainingImageSize = _options.TrainImageSize,
-                        RecommendedInferenceImageSize = _options.TrainImageSize,
-                        Backbone = _options.Backbone,
-                        UsedPretrainedBackbone = true,
-                        PretrainedWeightsReference = Path.GetFileName(pretrainedWeightsFile),
-                        Epochs = epoch,
-                        TrainSamples = trainSamples.Count,
-                        ValidationSamples = validationSamples.Count,
-                        DecisionThreshold = _options.DecisionThreshold,
-                        TrainedDevice = _device.type.ToString(),
-                        TrainedAtUtc = DateTimeOffset.UtcNow
-                    };
-
-                    metadata.Save(modelOutputPath);
-
-                    Console.WriteLine($"Saved best model: {modelOutputPath} (Val Loss={bestValidationLoss:F4})");
-                }
-
-                if (valMetrics.Loss < bestEarlyStoppingValidationLoss - _options.EarlyStoppingMinDelta)
-                {
-                    bestEarlyStoppingValidationLoss = valMetrics.Loss;
-                    epochsWithoutMeaningfulImprovement = 0;
-                }
-                else if (_options.EarlyStoppingPatience > 0 && epoch >= earlyStoppingStartEpoch)
-                {
-                    epochsWithoutMeaningfulImprovement++;
-                    if (epochsWithoutMeaningfulImprovement >= _options.EarlyStoppingPatience)
-                    {
-                        Console.WriteLine(
-                            $"Early stopping triggered at epoch {epoch}: no Val Loss improvement >= {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)} for {_options.EarlyStoppingPatience} epoch(s).");
-                        break;
-                    }
-                }
+                model.ConfigureBackboneTrainability(0);
+                Console.WriteLine($"Backbone frozen for first {_options.FreezeBackboneEpochs} epoch(s).");
+            }
+            else
+            {
+                model.ConfigureBackboneTrainability(model.BackboneStageCount > 0 ? model.BackboneStageCount : 1);
+                Console.WriteLine("Backbone starts fully trainable because freeze-backbone-epochs is 0.");
             }
 
-            if (bestModelSaved)
+            var currentLearningRate = _options.LearningRate;
+            var currentTrainableBackboneStages = _options.FreezeBackboneEpochs > 0
+                ? 0
+                : (model.BackboneStageCount > 0 ? model.BackboneStageCount : 1);
+            var layerwiseParameterGroups = model.GetLayerwiseParameterGroups(currentTrainableBackboneStages);
+            optim.Optimizer? optimizer = null;
+
+            try
             {
-                var finalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count);
-                PromoteAutoNamedOutput(modelOutputPath, finalOutputPath);
-                modelOutputPath = finalOutputPath;
+                optimizer = CreateOptimizer(layerwiseParameterGroups, currentLearningRate);
+
+                for (var epoch = 1; epoch <= _options.Epochs; epoch++)
+                {
+                    ThrowIfCancellationRequested();
+                    var epochStopwatch = Stopwatch.StartNew();
+                    var desiredTrainableBackboneStages = GetTrainableBackboneStageCountForEpoch(model, epoch);
+                    var learningRateChanged = false;
+
+                    if (_options.FreezeBackboneEpochs > 0 &&
+                        epoch == _options.FreezeBackboneEpochs + 1)
+                    {
+                        currentLearningRate = _options.FineTuneLearningRate;
+                        learningRateChanged = true;
+                    }
+
+                    if (desiredTrainableBackboneStages != currentTrainableBackboneStages || learningRateChanged)
+                    {
+                        currentTrainableBackboneStages = desiredTrainableBackboneStages;
+                        model.ConfigureBackboneTrainability(currentTrainableBackboneStages);
+                        layerwiseParameterGroups = model.GetLayerwiseParameterGroups(currentTrainableBackboneStages);
+                        optimizer.Dispose();
+                        optimizer = CreateOptimizer(layerwiseParameterGroups, currentLearningRate);
+
+                        var stageSummary = FormatStageSummary(model.GetTrainableBackboneStageNames(currentTrainableBackboneStages));
+                        var scaleSummary = FormatLayerwiseScaleSummary(layerwiseParameterGroups);
+
+                        if (learningRateChanged)
+                        {
+                            Console.WriteLine(
+                                $"Backbone unfrozen at epoch {epoch}. Trainable stages: {stageSummary}. Base lr={FormatLearningRate(currentLearningRate)}. Scales: {scaleSummary}.");
+                        }
+                        else
+                        {
+                            Console.WriteLine(
+                                $"Expanded backbone training at epoch {epoch}. Trainable stages: {stageSummary}. Base lr={FormatLearningRate(currentLearningRate)}. Scales: {scaleSummary}.");
+                        }
+                    }
+                    else if (epoch == 1)
+                    {
+                        var stageSummary = FormatStageSummary(model.GetTrainableBackboneStageNames(currentTrainableBackboneStages));
+                        var scaleSummary = FormatLayerwiseScaleSummary(layerwiseParameterGroups);
+                        Console.WriteLine($"Initial trainable stages: {stageSummary}. Base lr={FormatLearningRate(currentLearningRate)}. Scales: {scaleSummary}.");
+                    }
+
+                    var trainMetrics = RunEpoch(
+                        model,
+                        trainSamples,
+                        optimizer,
+                        layerwiseParameterGroups,
+                        isTraining: true,
+                        epoch,
+                        trainableBackboneStageCount: currentTrainableBackboneStages);
+                    ThrowIfCancellationRequested();
+                    var valMetrics = RunEpoch(
+                        model,
+                        validationSamples,
+                        optimizer: null,
+                        layerwiseParameterGroups: Array.Empty<PopularityModel.LayerwiseParameterGroup>(),
+                        isTraining: false,
+                        epoch,
+                        trainableBackboneStageCount: currentTrainableBackboneStages);
+                    epochStopwatch.Stop();
+
+                    epochTimings.Add(new EpochTiming(
+                        epoch,
+                        trainMetrics.Duration,
+                        valMetrics.Duration,
+                        epochStopwatch.Elapsed));
+
+                    var validationBreakdownText = valMetrics.HasClassBreakdown
+                        ? $" | L(P/U) = {valMetrics.PopularLoss:F4}/{valMetrics.UnpopularLoss:F4}, A(P/U) = {valMetrics.PopularAccuracy:P2}/{valMetrics.UnpopularAccuracy:P2}"
+                        : string.Empty;
+
+                    Console.WriteLine(
+                        $"Epoch {epoch}/{_options.Epochs} | " +
+                        $"LR={FormatLearningRate(currentLearningRate)} | " +
+                        $"Train Loss={trainMetrics.Loss:F4}, Train Acc={trainMetrics.Accuracy:P2} | " +
+                        $"Val Loss={valMetrics.Loss:F4}, Val Acc={valMetrics.Accuracy:P2}" +
+                        $"{validationBreakdownText} | " +
+                        $"Time(T/V/E)={FormatElapsed(trainMetrics.Duration)}/{FormatElapsed(valMetrics.Duration)}/{FormatElapsed(epochStopwatch.Elapsed)}");
+
+                    if (valMetrics.Loss < bestValidationLoss)
+                    {
+                        bestValidationLoss = valMetrics.Loss;
+                        model.save(modelOutputPath);
+                        bestModelSaved = true;
+
+                        var metadata = new PopularityModelMetadata
+                        {
+                            TrainingImageSize = _options.TrainImageSize,
+                            RecommendedInferenceImageSize = _options.TrainImageSize,
+                            Backbone = _options.Backbone,
+                            UsedPretrainedBackbone = true,
+                            PretrainedWeightsReference = Path.GetFileName(pretrainedWeightsFile),
+                            Epochs = epoch,
+                            TrainSamples = trainSamples.Count,
+                            ValidationSamples = validationSamples.Count,
+                            DecisionThreshold = _options.DecisionThreshold,
+                            TrainedDevice = _device.type.ToString(),
+                            TrainedAtUtc = DateTimeOffset.UtcNow
+                        };
+
+                        metadata.Save(modelOutputPath);
+
+                        Console.WriteLine($"Saved best model: {modelOutputPath} (Val Loss={bestValidationLoss:F4})");
+                    }
+
+                    if (valMetrics.Loss < bestEarlyStoppingValidationLoss - _options.EarlyStoppingMinDelta)
+                    {
+                        bestEarlyStoppingValidationLoss = valMetrics.Loss;
+                        epochsWithoutMeaningfulImprovement = 0;
+                    }
+                    else if (_options.EarlyStoppingPatience > 0 && epoch >= earlyStoppingStartEpoch)
+                    {
+                        epochsWithoutMeaningfulImprovement++;
+                        if (epochsWithoutMeaningfulImprovement >= _options.EarlyStoppingPatience)
+                        {
+                            Console.WriteLine(
+                                $"Early stopping triggered at epoch {epoch}: no Val Loss improvement >= {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)} for {_options.EarlyStoppingPatience} epoch(s).");
+                            break;
+                        }
+                    }
+                }
+
+                if (bestModelSaved)
+                {
+                    pendingFinalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count);
+                }
+
+                totalStopwatch.Stop();
+            }
+            catch (Exception ex)
+            {
+                totalStopwatch.Stop();
+
+                if (bestModelSaved && pendingFinalOutputPath is null)
+                {
+                    pendingFinalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count);
+                }
+
+                capturedException = ExceptionDispatchInfo.Capture(ex);
+            }
+            finally
+            {
+                optimizer?.Dispose();
+            }
+        }
+
+        if (capturedException is null)
+        {
+            if (bestModelSaved && pendingFinalOutputPath is not null)
+            {
+                PromoteAutoNamedOutput(modelOutputPath, pendingFinalOutputPath);
+                modelOutputPath = pendingFinalOutputPath;
                 bestModelPromoted = true;
                 Console.WriteLine($"Final auto-named model: {modelOutputPath}");
             }
 
-            totalStopwatch.Stop();
             PrintTimingSummary(
                 trainPreprocessStopwatch.Elapsed,
                 validationPreprocessStopwatch.Elapsed,
                 epochTimings,
                 totalStopwatch.Elapsed);
+            return;
         }
-        catch
-        {
-            totalStopwatch.Stop();
 
-            if (bestModelSaved && !bestModelPromoted)
-            {
-                bestModelPromoted = !string.IsNullOrWhiteSpace(
-                    TryPromoteInterruptedBestModel(modelOutputPath, trainSamples.Count));
-            }
-
-            throw;
-        }
-        finally
+        if (bestModelSaved && !bestModelPromoted && pendingFinalOutputPath is not null)
         {
-            optimizer.Dispose();
+            bestModelPromoted = !string.IsNullOrWhiteSpace(
+                TryPromoteInterruptedBestModel(modelOutputPath, pendingFinalOutputPath));
         }
+
+        capturedException.Throw();
     }
 
     public void RequestCancellation()
@@ -292,8 +365,10 @@ public sealed class ImagePopularityTrainer
         PopularityModel model,
         IReadOnlyList<LabeledImageSample> samples,
         optim.Optimizer? optimizer,
+        IReadOnlyList<PopularityModel.LayerwiseParameterGroup> layerwiseParameterGroups,
         bool isTraining,
-        int epoch)
+        int epoch,
+        int trainableBackboneStageCount)
     {
         var phaseStopwatch = Stopwatch.StartNew();
 
@@ -301,12 +376,7 @@ public sealed class ImagePopularityTrainer
         {
             model.train();
 
-            // Keep the frozen backbone in eval mode even after model.train()
-            // recursively switches child modules back to training mode.
-            if (_options.FreezeBackboneEpochs > 0 && epoch <= _options.FreezeBackboneEpochs)
-            {
-                model.SetBackboneTrainable(false);
-            }
+            model.ConfigureBackboneTrainability(trainableBackboneStageCount);
         }
         else
         {
@@ -355,6 +425,7 @@ public sealed class ImagePopularityTrainer
                 if (isTraining)
                 {
                     loss.backward();
+                    ApplyLayerwiseLearningRateScales(layerwiseParameterGroups);
                     optimizer!.step();
                 }
 
@@ -430,11 +501,9 @@ public sealed class ImagePopularityTrainer
         bool shuffle,
         PreprocessedImageCache cache)
     {
-        var ordered = samples.ToList();
-        if (shuffle)
-        {
-            ShuffleInPlace(ordered);
-        }
+        var ordered = shuffle
+            ? BuildBalancedTrainingOrder(samples, batchSize)
+            : samples.ToList();
 
         var imageTensorSize = 3 * _options.TrainImageSize * _options.TrainImageSize;
 
@@ -667,11 +736,73 @@ public sealed class ImagePopularityTrainer
         }
     }
 
-    private optim.Optimizer CreateOptimizer(PopularityModel model, double learningRate)
+    private List<LabeledImageSample> BuildBalancedTrainingOrder(IReadOnlyList<LabeledImageSample> samples, int batchSize)
     {
-        var trainableParameters = model.parameters()
-            .Where(p => p.requires_grad)
-            .ToArray();
+        var popular = samples.Where(sample => sample.Label > 0.5f).ToList();
+        var unpopular = samples.Where(sample => sample.Label < 0.5f).ToList();
+
+        if (popular.Count == 0 || unpopular.Count == 0)
+        {
+            var fallback = samples.ToList();
+            ShuffleInPlace(fallback);
+            return fallback;
+        }
+
+        ShuffleInPlace(popular);
+        ShuffleInPlace(unpopular);
+
+        var popularPerBatch = (batchSize + 1) / 2;
+        var unpopularPerBatch = batchSize / 2;
+        var batches = (int)Math.Ceiling((Math.Max(popular.Count, unpopular.Count) * 2d) / batchSize);
+        var ordered = new List<LabeledImageSample>(batches * batchSize);
+        var popularIndex = 0;
+        var unpopularIndex = 0;
+
+        for (var batch = 0; batch < batches; batch++)
+        {
+            var currentBatch = new List<LabeledImageSample>(batchSize);
+            AddCycledSamples(popular, popularPerBatch, currentBatch, ref popularIndex);
+            AddCycledSamples(unpopular, unpopularPerBatch, currentBatch, ref unpopularIndex);
+            ShuffleInPlace(currentBatch);
+            ordered.AddRange(currentBatch);
+        }
+
+        return ordered;
+    }
+
+    private void AddCycledSamples(
+        IList<LabeledImageSample> source,
+        int count,
+        ICollection<LabeledImageSample> destination,
+        ref int index)
+    {
+        if (source.Count == 0 || count <= 0)
+        {
+            return;
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            if (index >= source.Count)
+            {
+                ShuffleInPlace(source);
+                index = 0;
+            }
+
+            destination.Add(source[index]);
+            index++;
+        }
+    }
+
+    private optim.Optimizer CreateOptimizer(IReadOnlyList<PopularityModel.LayerwiseParameterGroup> parameterGroups, double learningRate)
+    {
+        var uniqueParameters = new HashSet<TorchSharp.Modules.Parameter>(ReferenceEqualityComparer.Instance);
+        foreach (var parameter in parameterGroups.SelectMany(group => group.Parameters))
+        {
+            uniqueParameters.Add(parameter);
+        }
+
+        var trainableParameters = uniqueParameters.ToArray();
 
         if (trainableParameters.Length == 0)
         {
@@ -679,6 +810,65 @@ public sealed class ImagePopularityTrainer
         }
 
         return optim.AdamW(trainableParameters, lr: learningRate, weight_decay: _options.WeightDecay);
+    }
+
+    private void ApplyLayerwiseLearningRateScales(IReadOnlyList<PopularityModel.LayerwiseParameterGroup> parameterGroups)
+    {
+        foreach (var parameterGroup in parameterGroups)
+        {
+            if (Math.Abs(parameterGroup.LearningRateScale - 1.0) < 1e-9)
+            {
+                continue;
+            }
+
+            foreach (var parameter in parameterGroup.Parameters)
+            {
+                using var gradient = parameter.grad;
+                if (gradient is null)
+                {
+                    continue;
+                }
+
+                gradient.mul_(parameterGroup.LearningRateScale);
+            }
+        }
+    }
+
+    private int GetTrainableBackboneStageCountForEpoch(PopularityModel model, int epoch)
+    {
+        if (model.BackboneStageCount == 0)
+        {
+            return _options.FreezeBackboneEpochs > 0 && epoch <= _options.FreezeBackboneEpochs
+                ? 0
+                : 1;
+        }
+
+        if (_options.FreezeBackboneEpochs <= 0)
+        {
+            return model.BackboneStageCount;
+        }
+
+        if (epoch <= _options.FreezeBackboneEpochs)
+        {
+            return 0;
+        }
+
+        var progressiveEpoch = epoch - _options.FreezeBackboneEpochs;
+        return Math.Min(model.BackboneStageCount, progressiveEpoch);
+    }
+
+    private static string FormatStageSummary(IReadOnlyList<string> stageNames)
+    {
+        return stageNames.Count == 0
+            ? "(head only)"
+            : string.Join(", ", stageNames);
+    }
+
+    private static string FormatLayerwiseScaleSummary(IReadOnlyList<PopularityModel.LayerwiseParameterGroup> parameterGroups)
+    {
+        return string.Join(
+            ", ",
+            parameterGroups.Select(group => $"{group.Name}={group.LearningRateScale.ToString("0.##", CultureInfo.InvariantCulture)}"));
     }
 
     private static void PrintTimingSummary(
@@ -759,7 +949,7 @@ public sealed class ImagePopularityTrainer
         File.Move(sourceMetadataPath, destinationMetadataPath, overwrite: true);
     }
 
-    private string? TryPromoteInterruptedBestModel(string autosaveModelPath, int trainSampleCount)
+    private string? TryPromoteInterruptedBestModel(string autosaveModelPath, string finalOutputPath)
     {
         try
         {
@@ -768,7 +958,6 @@ public sealed class ImagePopularityTrainer
                 return null;
             }
 
-            var finalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSampleCount);
             PromoteAutoNamedOutput(autosaveModelPath, finalOutputPath);
             Console.WriteLine($"Promoted interrupted best model: {finalOutputPath}");
             return finalOutputPath;

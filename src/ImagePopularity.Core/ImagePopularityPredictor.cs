@@ -9,6 +9,7 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
     private readonly int _imageSize;
     private readonly PopularityModel _model;
     private readonly InferencePreprocessCache? _preprocessCache;
+    private readonly bool _enableTta;
     private bool _disposed;
 
     public ImagePopularityPredictor(string modelPath, ImagePopularityPredictorOptions? options = null)
@@ -38,6 +39,7 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
         }
 
         var backbone = options.Backbone ?? metadata?.Backbone ?? PopularityBackboneCatalog.DefaultBackbone;
+        _enableTta = options.EnableTta;
         _preprocessCache = options.EnablePreprocessCache
             ? new InferencePreprocessCache(options.PreprocessCacheDirectory, _imageSize)
             : null;
@@ -94,6 +96,7 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
         {
             var currentBatch = Math.Min(batchSize, imagePaths.Count - start);
             var features = new float[currentBatch * imageTensorSize];
+            float[]? ttaFeatures = _enableTta ? new float[currentBatch * imageTensorSize] : null;
 
             for (var i = 0; i < currentBatch; i++)
             {
@@ -107,6 +110,10 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
                     ? _preprocessCache.LoadChw(imagePath)
                     : ImageTensorFactory.LoadNormalizedChw(imagePath, _imageSize);
                 Array.Copy(chw, 0, features, i * imageTensorSize, imageTensorSize);
+                if (ttaFeatures is not null)
+                {
+                    WriteHorizontallyFlippedChw(chw, ttaFeatures, i * imageTensorSize, _imageSize);
+                }
             }
 
             using var inputTensor = torch.tensor(features, dtype: ScalarType.Float32)
@@ -114,7 +121,10 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
                 .to(_device);
 
             using var logits = _model.forward(inputTensor);
-            using var batchProbabilities = torch.sigmoid(logits).to(CPU);
+            using var aggregatedLogits = _enableTta && ttaFeatures is not null
+                ? AverageWithHorizontalFlipTtaLogits(logits, ttaFeatures, currentBatch)
+                : logits.detach();
+            using var batchProbabilities = torch.sigmoid(aggregatedLogits).to(CPU);
 
             for (var i = 0; i < currentBatch; i++)
             {
@@ -125,6 +135,35 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
         }
 
         return probabilities;
+    }
+
+    private Tensor AverageWithHorizontalFlipTtaLogits(Tensor originalLogits, float[] ttaFeatures, int batchSize)
+    {
+        using var ttaInputTensor = torch.tensor(ttaFeatures, dtype: ScalarType.Float32)
+            .reshape(batchSize, 3, _imageSize, _imageSize)
+            .to(_device);
+        using var ttaLogits = _model.forward(ttaInputTensor);
+        return ((originalLogits + ttaLogits) / 2.0f).detach();
+    }
+
+    private static void WriteHorizontallyFlippedChw(float[] sourceChw, float[] destination, int destinationOffset, int imageSize)
+    {
+        var planeSize = imageSize * imageSize;
+        for (var channel = 0; channel < 3; channel++)
+        {
+            var sourceChannelOffset = channel * planeSize;
+            var destinationChannelOffset = destinationOffset + sourceChannelOffset;
+
+            for (var y = 0; y < imageSize; y++)
+            {
+                var rowOffset = y * imageSize;
+                for (var x = 0; x < imageSize; x++)
+                {
+                    destination[destinationChannelOffset + rowOffset + x] =
+                        sourceChw[sourceChannelOffset + rowOffset + (imageSize - 1 - x)];
+                }
+            }
+        }
     }
 
     public void Dispose()

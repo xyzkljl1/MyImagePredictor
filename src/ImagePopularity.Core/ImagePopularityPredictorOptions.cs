@@ -9,4 +9,6 @@ public sealed class ImagePopularityPredictorOptions
     public bool EnablePreprocessCache { get; init; }
 
     public string PreprocessCacheDirectory { get; init; } = Path.Combine("models", "inference-cache");
+
+    public bool EnableTta { get; init; } = true;
 }
