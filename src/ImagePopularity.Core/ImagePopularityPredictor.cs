@@ -63,6 +63,14 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
 
     public IReadOnlyList<float> PredictProbabilities(IReadOnlyList<string> imagePaths, int batchSize = 64)
     {
+        return PredictProbabilities(imagePaths, batchSize, progressCallback: null);
+    }
+
+    public IReadOnlyList<float> PredictProbabilities(
+        IReadOnlyList<string> imagePaths,
+        int batchSize,
+        Action<int, int>? progressCallback)
+    {
         EnsureNotDisposed();
 
         ArgumentNullException.ThrowIfNull(imagePaths);
@@ -112,6 +120,8 @@ public sealed class ImagePopularityPredictor : IImagePopularityPredictor
             {
                 probabilities[start + i] = batchProbabilities[i, 0].item<float>();
             }
+
+            progressCallback?.Invoke(start + currentBatch, imagePaths.Count);
         }
 
         return probabilities;

@@ -110,21 +110,11 @@ using var predictor = new ImagePopularityPredictor(modelPath, new ImagePopularit
     EnablePreprocessCache = enablePreprocessCache
 });
 
-var probabilities = new List<float>(imagePaths.Count);
 using var progress = new ConsoleProgressBar("Predict", imagePaths.Count);
-
-for (var start = 0; start < imagePaths.Count; start += batchSize)
-{
-    var currentBatch = Math.Min(batchSize, imagePaths.Count - start);
-    var batchImagePaths = imagePaths
-        .Skip(start)
-        .Take(currentBatch)
-        .ToArray();
-    var batchProbabilities = predictor.PredictProbabilities(batchImagePaths, currentBatch);
-    probabilities.AddRange(batchProbabilities);
-    progress.Report(start + currentBatch);
-}
-
+var probabilities = predictor.PredictProbabilities(
+    imagePaths,
+    batchSize,
+    progressCallback: (processed, _) => progress.Report(processed));
 progress.Complete();
 
 double probabilitySum = 0;
