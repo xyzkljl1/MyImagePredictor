@@ -187,14 +187,17 @@ public sealed class ImagePopularityTrainer
                     valMetrics.Duration,
                     epochStopwatch.Elapsed));
 
+                var validationBreakdownText = valMetrics.HasClassBreakdown
+                    ? $" | L(P/U) = {valMetrics.PopularLoss:F4}/{valMetrics.UnpopularLoss:F4}, A(P/U) = {valMetrics.PopularAccuracy:P2}/{valMetrics.UnpopularAccuracy:P2}"
+                    : string.Empty;
+
                 Console.WriteLine(
                     $"Epoch {epoch}/{_options.Epochs} | " +
-                    $"LR={currentLearningRate:E5} | " +
+                    $"LR={FormatLearningRate(currentLearningRate)} | " +
                     $"Train Loss={trainMetrics.Loss:F4}, Train Acc={trainMetrics.Accuracy:P2} | " +
-                    $"Val Loss={valMetrics.Loss:F4}, Val Acc={valMetrics.Accuracy:P2} | " +
-                    $"Train Time={FormatElapsed(trainMetrics.Duration)} | " +
-                    $"Val Time={FormatElapsed(valMetrics.Duration)} | " +
-                    $"Epoch Time={FormatElapsed(epochStopwatch.Elapsed)}");
+                    $"Val Loss={valMetrics.Loss:F4}, Val Acc={valMetrics.Accuracy:P2}" +
+                    $"{validationBreakdownText} | " +
+                    $"Time(T/V/E)={FormatElapsed(trainMetrics.Duration)}/{FormatElapsed(valMetrics.Duration)}/{FormatElapsed(epochStopwatch.Elapsed)}");
 
                 if (valMetrics.Loss < bestValidationLoss)
                 {
@@ -289,6 +292,12 @@ public sealed class ImagePopularityTrainer
         double totalLoss = 0;
         long totalCorrect = 0;
         long totalCount = 0;
+        double popularLoss = 0;
+        long popularCorrect = 0;
+        long popularCount = 0;
+        double unpopularLoss = 0;
+        long unpopularCorrect = 0;
+        long unpopularCount = 0;
 
         using var noGrad = isTraining ? null : torch.no_grad();
         var plannedBatches = Math.Max(1, (int)Math.Ceiling(samples.Count / (double)_options.BatchSize));
@@ -316,7 +325,8 @@ public sealed class ImagePopularityTrainer
                 }
 
                 using var logits = model.forward(inputs);
-                using var loss = nn.functional.binary_cross_entropy_with_logits(logits, labels);
+                using var perSampleLoss = nn.functional.softplus(logits) - (logits * labels);
+                using var loss = perSampleLoss.mean();
 
                 if (isTraining)
                 {
@@ -325,7 +335,7 @@ public sealed class ImagePopularityTrainer
                 }
 
                 var batchSize = labels.shape[0];
-                totalLoss += loss.item<float>() * (double)batchSize;
+                totalLoss += perSampleLoss.sum().item<float>();
 
                 using var probabilities = torch.sigmoid(logits);
                 using var predictions = torch.ge(probabilities, 0.5);
@@ -335,6 +345,32 @@ public sealed class ImagePopularityTrainer
                 totalCorrect += correct.sum().item<long>();
                 totalCount += batchSize;
                 processedBatches++;
+
+                if (!isTraining)
+                {
+                    using var popularMask = torch.ge(labels, 0.5);
+                    using var unpopularMask = torch.lt(labels, 0.5);
+
+                    var batchPopularCount = popularMask.sum().item<long>();
+                    if (batchPopularCount > 0)
+                    {
+                        using var popularLosses = perSampleLoss.masked_select(popularMask);
+                        using var popularCorrectTensor = correct.masked_select(popularMask);
+                        popularLoss += popularLosses.sum().item<float>();
+                        popularCorrect += popularCorrectTensor.sum().item<long>();
+                        popularCount += batchPopularCount;
+                    }
+
+                    var batchUnpopularCount = unpopularMask.sum().item<long>();
+                    if (batchUnpopularCount > 0)
+                    {
+                        using var unpopularLosses = perSampleLoss.masked_select(unpopularMask);
+                        using var unpopularCorrectTensor = correct.masked_select(unpopularMask);
+                        unpopularLoss += unpopularLosses.sum().item<float>();
+                        unpopularCorrect += unpopularCorrectTensor.sum().item<long>();
+                        unpopularCount += batchUnpopularCount;
+                    }
+                }
 
                 var avgLoss = totalCount == 0 ? 0 : totalLoss / totalCount;
                 var avgAccuracy = totalCount == 0 ? 0 : totalCorrect / (double)totalCount;
@@ -351,7 +387,13 @@ public sealed class ImagePopularityTrainer
         {
             Loss = totalCount == 0 ? double.MaxValue : totalLoss / totalCount,
             Accuracy = totalCount == 0 ? 0 : totalCorrect / (double)totalCount,
-            Duration = phaseStopwatch.Elapsed
+            Duration = phaseStopwatch.Elapsed,
+            PopularLoss = popularCount == 0 ? 0 : popularLoss / popularCount,
+            PopularAccuracy = popularCount == 0 ? 0 : popularCorrect / (double)popularCount,
+            PopularCount = popularCount,
+            UnpopularLoss = unpopularCount == 0 ? 0 : unpopularLoss / unpopularCount,
+            UnpopularAccuracy = unpopularCount == 0 ? 0 : unpopularCorrect / (double)unpopularCount,
+            UnpopularCount = unpopularCount
         };
         progress.Complete($"loss={metrics.Loss:F4} acc={metrics.Accuracy:P2}");
 
@@ -654,6 +696,11 @@ public sealed class ImagePopularityTrainer
         return elapsed.ToString(@"mm\:ss");
     }
 
+    private static string FormatLearningRate(double learningRate)
+    {
+        return learningRate.ToString("0.################", CultureInfo.InvariantCulture);
+    }
+
     private static string BuildTemporaryAutoOutputModelPath(string baseOutputPath)
     {
         var directory = Path.GetDirectoryName(baseOutputPath);
@@ -874,6 +921,20 @@ public sealed class ImagePopularityTrainer
         public double Accuracy { get; init; }
 
         public TimeSpan Duration { get; init; }
+
+        public double PopularLoss { get; init; }
+
+        public double PopularAccuracy { get; init; }
+
+        public long PopularCount { get; init; }
+
+        public double UnpopularLoss { get; init; }
+
+        public double UnpopularAccuracy { get; init; }
+
+        public long UnpopularCount { get; init; }
+
+        public bool HasClassBreakdown => PopularCount > 0 || UnpopularCount > 0;
     }
 
     private readonly record struct EpochTiming(int Epoch, TimeSpan TrainDuration, TimeSpan ValidationDuration, TimeSpan TotalDuration);
