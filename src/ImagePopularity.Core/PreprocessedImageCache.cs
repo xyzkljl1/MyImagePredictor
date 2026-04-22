@@ -24,7 +24,8 @@ internal sealed class PreprocessedImageCache : IDisposable
     public CacheBuildResult Build(
         IEnumerable<string> sourceImagePaths,
         string? progressLabel = null,
-        Func<string?>? dynamicStatusProvider = null)
+        Func<string?>? dynamicStatusProvider = null,
+        Func<bool>? cancellationRequested = null)
     {
         _adapter.EnsureNotDisposedForOwner();
         ArgumentNullException.ThrowIfNull(sourceImagePaths);
@@ -44,6 +45,11 @@ internal sealed class PreprocessedImageCache : IDisposable
 
         for (var index = 0; index < uniquePaths.Count; index++)
         {
+            if (cancellationRequested?.Invoke() == true)
+            {
+                throw new OperationCanceledException("Preprocess cache build was canceled.");
+            }
+
             var sourcePath = uniquePaths[index];
             try
             {

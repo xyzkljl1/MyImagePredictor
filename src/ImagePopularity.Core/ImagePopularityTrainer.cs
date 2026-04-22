@@ -16,6 +16,7 @@ public sealed class ImagePopularityTrainer
     private readonly ImageAugmentationOptions? _trainAugmentationOptions;
     private readonly PreprocessedImageCache _trainPreprocessedImageCache;
     private readonly PreprocessedImageCache _validationPreprocessedImageCache;
+    private volatile bool _cancellationRequested;
     private bool _disposed;
 
     public ImagePopularityTrainer(ImagePopularityTrainingOptions options)
@@ -78,12 +79,15 @@ public sealed class ImagePopularityTrainer
         EnsureNotDisposed();
         var totalStopwatch = Stopwatch.StartNew();
         var bestModelSaved = false;
+        var bestModelPromoted = false;
 
         var (trainSamples, validationSamples) = LoadDatasets();
         if (trainSamples.Count + validationSamples.Count < 100)
         {
             throw new InvalidOperationException("Not enough labeled images. Need at least 100 samples to train a reliable model.");
         }
+
+        ThrowIfCancellationRequested();
 
         var pretrainedWeightsFile = PretrainedWeightsResolver.Resolve(_options);
         var modelOutputPath = BuildTemporaryAutoOutputModelPath(_options.BuildInProgressOutputModelPath(trainSamples.Count));
@@ -95,7 +99,8 @@ public sealed class ImagePopularityTrainer
         var trainCacheBuild = _trainPreprocessedImageCache.Build(
             trainSamples.Select(x => x.ImagePath),
             progressLabel: "Preprocess train",
-            dynamicStatusProvider: progressMemoryProvider);
+            dynamicStatusProvider: progressMemoryProvider,
+            cancellationRequested: IsCancellationRequested);
         trainPreprocessStopwatch.Stop();
         Console.WriteLine(
             $"Training preprocess cache summary: total={trainCacheBuild.Total}, reused={trainCacheBuild.Reused}, created={trainCacheBuild.Created}, failed={trainCacheBuild.Failed}, elapsed={FormatElapsed(trainPreprocessStopwatch.Elapsed)}");
@@ -104,7 +109,8 @@ public sealed class ImagePopularityTrainer
         var validationCacheBuild = _validationPreprocessedImageCache.Build(
             validationSamples.Select(x => x.ImagePath),
             progressLabel: "Preprocess validation",
-            dynamicStatusProvider: progressMemoryProvider);
+            dynamicStatusProvider: progressMemoryProvider,
+            cancellationRequested: IsCancellationRequested);
         validationPreprocessStopwatch.Stop();
         Console.WriteLine(
             $"Validation preprocess cache summary: total={validationCacheBuild.Total}, reused={validationCacheBuild.Reused}, created={validationCacheBuild.Created}, failed={validationCacheBuild.Failed}, elapsed={FormatElapsed(validationPreprocessStopwatch.Elapsed)}");
@@ -158,6 +164,7 @@ public sealed class ImagePopularityTrainer
         {
             for (var epoch = 1; epoch <= _options.Epochs; epoch++)
             {
+                ThrowIfCancellationRequested();
                 var epochStopwatch = Stopwatch.StartNew();
                 if (_options.FreezeBackboneEpochs > 0 &&
                     epoch == _options.FreezeBackboneEpochs + 1)
@@ -170,6 +177,7 @@ public sealed class ImagePopularityTrainer
                 }
 
                 var trainMetrics = RunEpoch(model, trainSamples, optimizer, isTraining: true, epoch);
+                ThrowIfCancellationRequested();
                 var valMetrics = RunEpoch(model, validationSamples, optimizer: null, isTraining: false, epoch);
                 epochStopwatch.Stop();
 
@@ -219,6 +227,7 @@ public sealed class ImagePopularityTrainer
                 var finalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count);
                 PromoteAutoNamedOutput(modelOutputPath, finalOutputPath);
                 modelOutputPath = finalOutputPath;
+                bestModelPromoted = true;
                 Console.WriteLine($"Final auto-named model: {modelOutputPath}");
             }
 
@@ -229,10 +238,27 @@ public sealed class ImagePopularityTrainer
                 epochTimings,
                 totalStopwatch.Elapsed);
         }
+        catch
+        {
+            totalStopwatch.Stop();
+
+            if (bestModelSaved && !bestModelPromoted)
+            {
+                bestModelPromoted = !string.IsNullOrWhiteSpace(
+                    TryPromoteInterruptedBestModel(modelOutputPath, trainSamples.Count));
+            }
+
+            throw;
+        }
         finally
         {
             optimizer.Dispose();
         }
+    }
+
+    public void RequestCancellation()
+    {
+        _cancellationRequested = true;
     }
 
     private EpochMetrics RunEpoch(
@@ -277,6 +303,8 @@ public sealed class ImagePopularityTrainer
         var processedBatches = 0;
         foreach (var batch in CreateBatches(samples, _options.BatchSize, shuffle: isTraining, cache: cache))
         {
+            ThrowIfCancellationRequested();
+
             try
             {
                 using var inputs = batch.Inputs.to(_device);
@@ -346,6 +374,8 @@ public sealed class ImagePopularityTrainer
 
         for (var start = 0; start < ordered.Count; start += batchSize)
         {
+            ThrowIfCancellationRequested();
+
             var count = Math.Min(batchSize, ordered.Count - start);
             var features = new float[count * imageTensorSize];
             var labels = new float[count];
@@ -658,6 +688,27 @@ public sealed class ImagePopularityTrainer
         File.Move(sourceMetadataPath, destinationMetadataPath, overwrite: true);
     }
 
+    private string? TryPromoteInterruptedBestModel(string autosaveModelPath, int trainSampleCount)
+    {
+        try
+        {
+            if (!File.Exists(autosaveModelPath))
+            {
+                return null;
+            }
+
+            var finalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSampleCount);
+            PromoteAutoNamedOutput(autosaveModelPath, finalOutputPath);
+            Console.WriteLine($"Promoted interrupted best model: {finalOutputPath}");
+            return finalOutputPath;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: failed to promote interrupted best model from autosave ({ex.Message})");
+            return null;
+        }
+    }
+
     private static IReadOnlyList<string> ResolveExistingValidationDirectories(string classRoot, IReadOnlyList<string> validationDirectories)
     {
         var existingDirectories = new List<string>();
@@ -767,6 +818,19 @@ public sealed class ImagePopularityTrainer
         if (_disposed)
         {
             throw new ObjectDisposedException(nameof(ImagePopularityTrainer));
+        }
+    }
+
+    private bool IsCancellationRequested()
+    {
+        return _cancellationRequested;
+    }
+
+    private void ThrowIfCancellationRequested()
+    {
+        if (_cancellationRequested)
+        {
+            throw new OperationCanceledException("Training was canceled.");
         }
     }
 

@@ -17,6 +17,11 @@ internal sealed class ModelTrainer : IDisposable
         _trainer.Run();
     }
 
+    public void RequestCancellation()
+    {
+        _trainer.RequestCancellation();
+    }
+
     public void Dispose()
     {
         _trainer.Dispose();
