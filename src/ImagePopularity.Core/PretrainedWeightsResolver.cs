@@ -1,7 +1,6 @@
-using ImagePopularity.Core;
 using System.Net.Http;
 
-namespace ImagePopularity.Trainer;
+namespace ImagePopularity.Core;
 
 internal static class PretrainedWeightsResolver
 {
@@ -13,7 +12,7 @@ internal static class PretrainedWeightsResolver
         Timeout = TimeSpan.FromMinutes(30)
     };
 
-    public static string Resolve(TrainingOptions options)
+    public static string Resolve(ImagePopularityTrainingOptions options)
     {
         if (!string.IsNullOrWhiteSpace(options.PretrainedWeightsFile))
         {

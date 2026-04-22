@@ -1,9 +1,8 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using ImagePopularity.Core;
 
-namespace ImagePopularity.Trainer;
+namespace ImagePopularity.Core;
 
 internal sealed class PreprocessedImageCache : IDisposable
 {
@@ -22,7 +21,10 @@ internal sealed class PreprocessedImageCache : IDisposable
         _adapter = new PreprocessedImageCacheAdapter(cacheDirectory, pipeline);
     }
 
-    public CacheBuildResult Build(IEnumerable<string> sourceImagePaths, string? progressLabel = null)
+    public CacheBuildResult Build(
+        IEnumerable<string> sourceImagePaths,
+        string? progressLabel = null,
+        Func<string?>? dynamicStatusProvider = null)
     {
         _adapter.EnsureNotDisposedForOwner();
         ArgumentNullException.ThrowIfNull(sourceImagePaths);
@@ -38,7 +40,7 @@ internal sealed class PreprocessedImageCache : IDisposable
         var failed = 0;
         using var progress = string.IsNullOrWhiteSpace(progressLabel)
             ? null
-            : new ConsoleProgressBar(progressLabel, uniquePaths.Count);
+            : new ConsoleProgressBar(progressLabel, uniquePaths.Count, dynamicStatusProvider: dynamicStatusProvider);
 
         for (var index = 0; index < uniquePaths.Count; index++)
         {

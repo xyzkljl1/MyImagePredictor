@@ -325,23 +325,35 @@ Notes:
 """;
     }
 
-    public string BuildInProgressOutputModelPath(int trainSampleCount)
+    public ImagePopularityTrainingOptions ToCoreOptions()
     {
-        return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal: null));
-    }
-
-    public string BuildCompletedAutoOutputModelPath(DateTimeOffset completedAtLocal, int trainSampleCount)
-    {
-        return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal));
-    }
-
-    private string BuildGeneratedModelFileName(int trainSampleCount, DateTimeOffset? completedAtLocal)
-    {
-        var augmentationTag = EnableAugmentation ? "a1" : "a0";
-        var timestampSuffix = completedAtLocal is null
-            ? string.Empty
-            : $"_{completedAtLocal.Value.ToString("MMddHHmm", CultureInfo.InvariantCulture)}";
-        return $"{OutputModelPrefix}{trainSampleCount}_{TrainImageSize}_{augmentationTag}_e{Epochs}b{BatchSize}s{Seed}{timestampSuffix}.pt";
+        return new ImagePopularityTrainingOptions
+        {
+            PopularDirectory = PopularDirectory,
+            UnpopularDirectory = UnpopularDirectory,
+            OutputModelPrefix = OutputModelPrefix,
+            PreprocessCacheDirectory = PreprocessCacheDirectory,
+            TrainImageSize = TrainImageSize,
+            Epochs = Epochs,
+            BatchSize = BatchSize,
+            LearningRate = LearningRate,
+            FineTuneLearningRate = FineTuneLearningRate,
+            WeightDecay = WeightDecay,
+            ValidationDirectories = ValidationDirectories,
+            ValidationSplit = ValidationSplit,
+            Seed = Seed,
+            MaxSamplesPerClass = MaxSamplesPerClass,
+            Backbone = Backbone,
+            PretrainedWeightsFile = PretrainedWeightsFile,
+            FreezeBackboneEpochs = FreezeBackboneEpochs,
+            EnableAugmentation = EnableAugmentation,
+            HorizontalFlipProbability = HorizontalFlipProbability,
+            MaxRotationDegrees = MaxRotationDegrees,
+            BrightnessJitter = BrightnessJitter,
+            ContrastJitter = ContrastJitter,
+            SaturationJitter = SaturationJitter,
+            MinRandomCropScale = MinRandomCropScale
+        };
     }
 
     private static string ParseOutputModelPrefix(string? value)

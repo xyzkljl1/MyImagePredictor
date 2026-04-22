@@ -5,9 +5,14 @@ namespace ImagePopularity.Core;
 
 public sealed class ConsoleProgressBar : IDisposable
 {
+    private const int DefaultMinRefreshMilliseconds = 200;
+
     private readonly string _label;
     private readonly int _total;
     private readonly int _barWidth;
+    private readonly int _minRefreshMilliseconds;
+    private readonly bool _clearOnComplete;
+    private readonly Func<string?>? _dynamicStatusProvider;
     private readonly Stopwatch _elapsed = Stopwatch.StartNew();
     private readonly Stopwatch _throttle = Stopwatch.StartNew();
 
@@ -15,11 +20,20 @@ public sealed class ConsoleProgressBar : IDisposable
     private int _lastRenderedCurrent = -1;
     private bool _completed;
 
-    public ConsoleProgressBar(string label, int total, int barWidth = 28)
+    public ConsoleProgressBar(
+        string label,
+        int total,
+        int barWidth = 28,
+        int minRefreshMilliseconds = DefaultMinRefreshMilliseconds,
+        bool clearOnComplete = false,
+        Func<string?>? dynamicStatusProvider = null)
     {
         _label = string.IsNullOrWhiteSpace(label) ? "Progress" : label;
         _total = Math.Max(total, 0);
         _barWidth = Math.Clamp(barWidth, 10, 80);
+        _minRefreshMilliseconds = Math.Max(0, minRefreshMilliseconds);
+        _clearOnComplete = clearOnComplete;
+        _dynamicStatusProvider = dynamicStatusProvider;
 
         Render(0, status: null, force: true);
     }
@@ -40,7 +54,7 @@ public sealed class ConsoleProgressBar : IDisposable
             return;
         }
 
-        if (normalizedCurrent != _total && _throttle.ElapsedMilliseconds < 100)
+        if (normalizedCurrent != _total && _throttle.ElapsedMilliseconds < _minRefreshMilliseconds)
         {
             return;
         }
@@ -57,7 +71,15 @@ public sealed class ConsoleProgressBar : IDisposable
 
         var finalCurrent = _total == 0 ? 0 : _total;
         Render(finalCurrent, status, force: true);
-        Console.WriteLine();
+        if (_clearOnComplete)
+        {
+            ClearCurrentLine();
+        }
+        else
+        {
+            Console.WriteLine();
+        }
+
         _completed = true;
     }
 
@@ -84,6 +106,12 @@ public sealed class ConsoleProgressBar : IDisposable
         var elapsedText = FormatElapsed(_elapsed.Elapsed);
 
         var text = $"\r{_label} [{bar}] {percentText}% ({current}/{_total}) | elapsed={elapsedText}";
+        var dynamicStatus = _dynamicStatusProvider?.Invoke();
+        if (!string.IsNullOrWhiteSpace(dynamicStatus))
+        {
+            text += $" | {dynamicStatus}";
+        }
+
         if (!string.IsNullOrWhiteSpace(status))
         {
             text += $" | {status}";
@@ -103,6 +131,19 @@ public sealed class ConsoleProgressBar : IDisposable
         {
             _throttle.Restart();
         }
+    }
+
+    private void ClearCurrentLine()
+    {
+        var clearWidth = Math.Max(_lastPrintedLength, 0);
+        Console.Write("\r");
+        if (clearWidth > 0)
+        {
+            Console.Write(new string(' ', clearWidth));
+        }
+
+        Console.Write("\r");
+        _lastPrintedLength = 0;
     }
 
     private static string FormatElapsed(TimeSpan elapsed)
