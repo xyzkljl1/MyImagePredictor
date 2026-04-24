@@ -82,7 +82,7 @@ internal sealed class TrainingOptions
 
     public double MinRandomCropScale { get; init; } = 0.85;
 
-    public bool EnableGroupAwareTraining { get; init; }
+    public bool EnableGroupAwareTraining { get; init; } = true;
 
     public static TrainingOptions Parse(string[] args)
     {
@@ -190,7 +190,7 @@ internal sealed class TrainingOptions
         var contrastJitter = ReadDouble(map, "contrast-jitter", 0.15);
         var saturationJitter = ReadDouble(map, "saturation-jitter", 0.15);
         var minRandomCropScale = ReadDouble(map, "min-random-crop-scale", 0.85);
-        var enableGroupAwareTraining = ReadBool(map, "enable-group-aware-training", false);
+        var enableGroupAwareTraining = ReadBool(map, "enable-group-aware-training", true);
         var outputModelPrefix = ParseOutputModelPrefix(
             map.TryGetValue("output-model", out var outputModel) ? outputModel : null);
 
@@ -296,7 +296,7 @@ Usage:
     [--contrast-jitter 0.15] \
     [--saturation-jitter 0.15] \
     [--min-random-crop-scale 0.85] \
-    [--enable-group-aware-training false] \
+    [--enable-group-aware-training true] \
     [--epochs 20] \
     [--batch-size 128] \
     [--learning-rate 0.0003] \
@@ -324,10 +324,13 @@ Notes:
   The trainer always auto-generates the rest of the model file name using train
   sample count, image size, augmentation flag, decision threshold, epochs,
   batch size, seed, and training completion time (month/day/hour/minute).
-  When --enable-group-aware-training is true, the trainer will infer a group id
+  Group-aware training is enabled by default. When
+  --enable-group-aware-training is true, the trainer will infer a group id
   from the numeric prefix before the first '_' in each file name, use it for
   group-aware train/validation separation, down-weight larger near-duplicate
   groups during training, and limit per-batch repeats from the same group.
+  Pass --enable-group-aware-training false to disable all group-aware
+  behavior and fall back to the original sample-level logic.
   Preprocess cache is always enabled for training.
   Pretrained backbone is always enabled.
   If --pretrained-weights is omitted, the trainer will auto-download

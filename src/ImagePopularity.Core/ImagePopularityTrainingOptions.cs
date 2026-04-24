@@ -5,7 +5,7 @@ namespace ImagePopularity.Core;
 public sealed class ImagePopularityTrainingOptions
 {
     public const double DefaultDecisionThreshold = 0.45;
-    public const int DefaultEarlyStoppingPatience = 2;
+    public const int DefaultEarlyStoppingPatience = 4;
     public const double DefaultEarlyStoppingMinDelta = 0.01;
 
     public required string PopularDirectory { get; init; }
@@ -62,7 +62,7 @@ public sealed class ImagePopularityTrainingOptions
 
     public double EarlyStoppingMinDelta { get; init; } = DefaultEarlyStoppingMinDelta;
 
-    public bool EnableGroupAwareTraining { get; init; }
+    public bool EnableGroupAwareTraining { get; init; } = true;
 
     public string BuildInProgressOutputModelPath(int trainSampleCount)
     {

@@ -15,6 +15,7 @@ public sealed class ImagePopularityTrainer
     private const double ThresholdScanMinimum = 0.20d;
     private const double ThresholdScanMaximum = 0.70d;
     private const double ThresholdScanStep = 0.01d;
+    private const double PopularLossTarget = 0.5d;
 
     private readonly ImagePopularityTrainingOptions _options;
     private readonly Device _device;
@@ -88,8 +89,8 @@ public sealed class ImagePopularityTrainer
         var bestModelPromoted = false;
         ExceptionDispatchInfo? capturedException = null;
         string? pendingFinalOutputPath = null;
-        double bestSavedBalancedAccuracy = double.MinValue;
-        double bestSavedValidationLoss = double.MaxValue;
+        var bestSavedSelection = LossPriorityState.Unset;
+        var bestEarlyStoppingSelection = LossPriorityState.Unset;
         double bestSavedDecisionThreshold = _options.DecisionThreshold;
 
         var (trainSamples, validationSamples) = LoadDatasets();
@@ -137,6 +138,8 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine("Training batch strategy: balanced P/U batches (minority oversampled when needed).");
         Console.WriteLine("Fine-tune strategy: progressive backbone unfreezing with layer-wise learning-rate scaling.");
         Console.WriteLine(
+            $"Best-model objective: prefer Popular Loss < {PopularLossTarget.ToString("0.##", CultureInfo.InvariantCulture)}, then minimize Unpopular Loss, then Val Loss.");
+        Console.WriteLine(
             _options.EnableGroupAwareTraining
                 ? $"Group-aware training: enabled (group split, group down-weighting 1/n^{GroupWeightExponent.ToString("0.##", CultureInfo.InvariantCulture)}, max {MaxSameGroupPerTrainingBatch} sample(s) per group per batch)."
                 : "Group-aware training: disabled.");
@@ -160,12 +163,10 @@ public sealed class ImagePopularityTrainer
 
         var earlyStoppingStartEpoch = Math.Max(2, _options.FreezeBackboneEpochs + 2);
         Console.WriteLine(
-            $"Early stopping: enabled (monitor=Val Loss, start epoch {earlyStoppingStartEpoch}, patience {_options.EarlyStoppingPatience}, min delta {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)})");
+            $"Early stopping: enabled (before Popular Loss < {PopularLossTarget.ToString("0.##", CultureInfo.InvariantCulture)} monitor Popular Loss, then monitor Unpopular Loss with patience {_options.EarlyStoppingPatience}, min delta {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)}, start epoch {earlyStoppingStartEpoch})");
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(modelOutputPath))!);
 
-        var bestValidationLoss = double.MaxValue;
-        var bestEarlyStoppingValidationLoss = double.MaxValue;
         var epochsWithoutMeaningfulImprovement = 0;
         var epochTimings = new List<EpochTiming>(_options.Epochs);
 
@@ -270,7 +271,7 @@ public sealed class ImagePopularityTrainer
                         ? $" | L(P/U) = {valMetrics.PopularLoss:F4}/{valMetrics.UnpopularLoss:F4}, A(P/U) = {valMetrics.PopularAccuracy:P2}/{valMetrics.UnpopularAccuracy:P2}"
                         : string.Empty;
                     var thresholdSummaryText = !double.IsNaN(valMetrics.DecisionThresholdUsed)
-                        ? $" | Thr={valMetrics.DecisionThresholdUsed.ToString("0.##", CultureInfo.InvariantCulture)} | BAcc={valMetrics.BalancedAccuracy:P2}"
+                        ? $" | Thr={valMetrics.DecisionThresholdUsed.ToString("0.##", CultureInfo.InvariantCulture)} | BLoss={valMetrics.BalancedLoss:F4}"
                         : string.Empty;
 
                     Console.WriteLine(
@@ -282,15 +283,9 @@ public sealed class ImagePopularityTrainer
                         $"{thresholdSummaryText} | " +
                         $"Time(T/V/E)={FormatElapsed(trainMetrics.Duration)}/{FormatElapsed(valMetrics.Duration)}/{FormatElapsed(epochStopwatch.Elapsed)}");
 
-                    if (IsBetterBestModelCandidate(
-                        valMetrics.BalancedAccuracy,
-                        valMetrics.Loss,
-                        bestSavedBalancedAccuracy,
-                        bestSavedValidationLoss))
+                    if (IsBetterBestModelCandidate(valMetrics, bestSavedSelection))
                     {
-                        bestValidationLoss = Math.Min(bestValidationLoss, valMetrics.Loss);
-                        bestSavedBalancedAccuracy = valMetrics.BalancedAccuracy;
-                        bestSavedValidationLoss = valMetrics.Loss;
+                        bestSavedSelection = LossPriorityState.FromEpochMetrics(valMetrics);
                         bestSavedDecisionThreshold = valMetrics.DecisionThresholdUsed;
                         model.save(modelOutputPath);
                         bestModelSaved = true;
@@ -313,12 +308,12 @@ public sealed class ImagePopularityTrainer
                         metadata.Save(modelOutputPath);
 
                         Console.WriteLine(
-                            $"Saved best model: {modelOutputPath} (BAcc={bestSavedBalancedAccuracy:P2}, Val Loss={bestSavedValidationLoss:F4}, Thr={bestSavedDecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)})");
+                            $"Saved best model: {modelOutputPath} (Pop Loss={bestSavedSelection.PopularLoss:F4}, Unpop Loss={bestSavedSelection.UnpopularLoss:F4}, Val Loss={bestSavedSelection.TotalLoss:F4}, Thr={bestSavedDecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)})");
                     }
 
-                    if (valMetrics.Loss < bestEarlyStoppingValidationLoss - _options.EarlyStoppingMinDelta)
+                    if (HasMeaningfulEarlyStoppingImprovement(valMetrics, bestEarlyStoppingSelection, _options.EarlyStoppingMinDelta))
                     {
-                        bestEarlyStoppingValidationLoss = valMetrics.Loss;
+                        bestEarlyStoppingSelection = LossPriorityState.FromEpochMetrics(valMetrics);
                         epochsWithoutMeaningfulImprovement = 0;
                     }
                     else if (_options.EarlyStoppingPatience > 0 && epoch >= earlyStoppingStartEpoch)
@@ -327,7 +322,9 @@ public sealed class ImagePopularityTrainer
                         if (epochsWithoutMeaningfulImprovement >= _options.EarlyStoppingPatience)
                         {
                             Console.WriteLine(
-                                $"Early stopping triggered at epoch {epoch}: no Val Loss improvement >= {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)} for {_options.EarlyStoppingPatience} epoch(s).");
+                                bestEarlyStoppingSelection.MeetsPopularTarget
+                                    ? $"Early stopping triggered at epoch {epoch}: no Unpopular Loss improvement >= {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)} while keeping Popular Loss < {PopularLossTarget.ToString("0.##", CultureInfo.InvariantCulture)} for {_options.EarlyStoppingPatience} epoch(s)."
+                                    : $"Early stopping triggered at epoch {epoch}: no Popular Loss improvement >= {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)} and Popular Loss has not yet dropped below {PopularLossTarget.ToString("0.##", CultureInfo.InvariantCulture)} for {_options.EarlyStoppingPatience} epoch(s).");
                             break;
                         }
                     }
@@ -535,6 +532,13 @@ public sealed class ImagePopularityTrainer
             UnpopularAccuracy = unpopularCount == 0 ? 0 : unpopularCorrect / (double)unpopularCount,
             UnpopularCount = unpopularCount,
             DecisionThresholdUsed = _options.DecisionThreshold,
+            BalancedLoss = popularCount == 0 || unpopularCount == 0
+                ? totalCount == 0
+                    ? 0
+                    : isTraining && totalWeight > 0
+                        ? totalLoss / totalWeight
+                        : totalLoss / totalCount
+                : ((popularLoss / popularCount) + (unpopularLoss / unpopularCount)) / 2d,
             BalancedAccuracy = popularCount == 0 || unpopularCount == 0
                 ? totalCount == 0 ? 0 : totalCorrect / (double)totalCount
                 : ((popularCorrect / (double)popularCount) + (unpopularCorrect / (double)unpopularCount)) / 2d
@@ -1068,26 +1072,99 @@ public sealed class ImagePopularityTrainer
         }
     }
 
-    private static bool IsBetterBestModelCandidate(
-        double candidateBalancedAccuracy,
-        double candidateLoss,
-        double currentBestBalancedAccuracy,
-        double currentBestLoss)
+    private static bool IsBetterBestModelCandidate(EpochMetrics candidateMetrics, LossPriorityState currentBest)
     {
         const double tolerance = 1e-9;
-
-        if (candidateBalancedAccuracy > currentBestBalancedAccuracy + tolerance)
+        if (!currentBest.HasValue)
         {
             return true;
         }
 
-        if (Math.Abs(candidateBalancedAccuracy - currentBestBalancedAccuracy) <= tolerance &&
-            candidateLoss < currentBestLoss - tolerance)
+        var candidateMeetsPopularTarget = candidateMetrics.PopularLoss < PopularLossTarget;
+
+        if (candidateMeetsPopularTarget != currentBest.MeetsPopularTarget)
+        {
+            return candidateMeetsPopularTarget;
+        }
+
+        if (candidateMeetsPopularTarget)
+        {
+            if (candidateMetrics.UnpopularLoss < currentBest.UnpopularLoss - tolerance)
+            {
+                return true;
+            }
+
+            if (Math.Abs(candidateMetrics.UnpopularLoss - currentBest.UnpopularLoss) <= tolerance &&
+                candidateMetrics.Loss < currentBest.TotalLoss - tolerance)
+            {
+                return true;
+            }
+
+            if (Math.Abs(candidateMetrics.UnpopularLoss - currentBest.UnpopularLoss) <= tolerance &&
+                Math.Abs(candidateMetrics.Loss - currentBest.TotalLoss) <= tolerance &&
+                candidateMetrics.PopularLoss < currentBest.PopularLoss - tolerance)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        if (candidateMetrics.PopularLoss < currentBest.PopularLoss - tolerance)
+        {
+            return true;
+        }
+
+        if (Math.Abs(candidateMetrics.PopularLoss - currentBest.PopularLoss) <= tolerance &&
+            candidateMetrics.Loss < currentBest.TotalLoss - tolerance)
+        {
+            return true;
+        }
+
+        if (Math.Abs(candidateMetrics.PopularLoss - currentBest.PopularLoss) <= tolerance &&
+            Math.Abs(candidateMetrics.Loss - currentBest.TotalLoss) <= tolerance &&
+            candidateMetrics.UnpopularLoss < currentBest.UnpopularLoss - tolerance)
         {
             return true;
         }
 
         return false;
+    }
+
+    private static bool HasMeaningfulEarlyStoppingImprovement(
+        EpochMetrics candidateMetrics,
+        LossPriorityState currentBest,
+        double minDelta)
+    {
+        if (!currentBest.HasValue)
+        {
+            return true;
+        }
+
+        var candidateMeetsPopularTarget = candidateMetrics.PopularLoss < PopularLossTarget;
+
+        if (!currentBest.MeetsPopularTarget)
+        {
+            if (candidateMeetsPopularTarget)
+            {
+                return true;
+            }
+
+            return candidateMetrics.PopularLoss < currentBest.PopularLoss - minDelta;
+        }
+
+        if (!candidateMeetsPopularTarget)
+        {
+            return false;
+        }
+
+        if (candidateMetrics.UnpopularLoss < currentBest.UnpopularLoss - minDelta)
+        {
+            return true;
+        }
+
+        return Math.Abs(candidateMetrics.UnpopularLoss - currentBest.UnpopularLoss) <= minDelta &&
+               candidateMetrics.Loss < currentBest.TotalLoss - minDelta;
     }
 
     private static ThresholdMetrics FindBestValidationThreshold(
@@ -1493,6 +1570,8 @@ public sealed class ImagePopularityTrainer
 
         public double DecisionThresholdUsed { get; init; } = double.NaN;
 
+        public double BalancedLoss { get; init; }
+
         public double BalancedAccuracy { get; init; }
 
         public bool HasClassBreakdown => PopularCount > 0 || UnpopularCount > 0;
@@ -1504,6 +1583,24 @@ public sealed class ImagePopularityTrainer
         double PopularAccuracy,
         double UnpopularAccuracy,
         double BalancedAccuracy);
+
+    private readonly record struct LossPriorityState(
+        double PopularLoss,
+        double UnpopularLoss,
+        double TotalLoss,
+        bool MeetsPopularTarget,
+        bool HasValue)
+    {
+        public static LossPriorityState Unset => new(double.MaxValue, double.MaxValue, double.MaxValue, false, false);
+
+        public static LossPriorityState FromEpochMetrics(EpochMetrics metrics) =>
+            new(
+                metrics.PopularLoss,
+                metrics.UnpopularLoss,
+                metrics.Loss,
+                metrics.PopularLoss < PopularLossTarget,
+                true);
+    }
 
     private readonly record struct EpochTiming(int Epoch, TimeSpan TrainDuration, TimeSpan ValidationDuration, TimeSpan TotalDuration);
 

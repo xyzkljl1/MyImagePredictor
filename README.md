@@ -119,11 +119,11 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 - 训练缓存内容为“增强 + PadResize + Normalize”后的 `float32 CHW` 张量（`train` 子目录）；验证缓存为“PadResize + Normalize”后的张量（`validation` 子目录）。
 - `Trainer` 不再提供 `--inference-image-size` 参数，模型元数据中的“推荐推理尺寸”会自动等于 `--train-image-size`；推理时你仍可在 `Demo/API` 里传入 `inferenceImageSize` 覆盖。
 - 训练时使用固定决策阈值 `0.45` 计算 `Train Acc / Val Acc`，并将该阈值写入模型元数据与自动命名文件名（例如 `t045`）。
-- 验证阶段会自动在一组候选阈值上扫描，并选择验证集 **Balanced Accuracy** 更优的阈值作为该轮的有效验证阈值；保存最佳模型时会把该阈值写回模型元数据与自动命名文件名。
-- 已启用 early stopping：默认监控 `Val Loss`，从“解冻骨干后的下一轮”开始生效，`patience=2`，`min_delta=0.01`。
+- 验证阶段仍会自动在一组候选阈值上扫描，并记录该轮更合适的辅助阈值；这个阈值会写回模型元数据与自动命名文件名，但它**不参与主要训练目标的定义**。
+- 当前 best model 的主目标是：**先满足 `Popular Loss < 0.5`，再让 `Unpopular Loss` 尽可能低，最后才比较总 `Val Loss`**。
+- 已启用 early stopping：从“解冻骨干后的下一轮”开始生效，`patience=4`，`min_delta=0.01`；在 `Popular Loss < 0.5` 之前优先监控 `Popular Loss`，达到该条件后优先监控 `Unpopular Loss`。
 - 训练 batch 使用**平衡 P/U 采样**：每个训练 batch 会尽量保持 `popular/unpopular` 接近 1:1；如果某一类样本较少，会在该 epoch 内对少数类做循环重采样。
-- 默认按 **Balanced Accuracy 优先、Val Loss 次级** 的规则保存 best model，这通常比只看总 `Val Loss` 更适合 `popular/unpopular` 不平衡或两类难度不同的场景。
-- 可通过 `--enable-group-aware-training true` 启用**按组去偏**训练：
+- 默认会启用**按组去偏**训练；如需关闭，可传 `--enable-group-aware-training false`：
   - 从文件名中提取第一个 `_` 之前的纯数字作为组号，例如 `123_p123.jpg` 和 `123_456.png` 都属于组 `123`
   - 随机切分训练/验证集时会按组切分，避免同组高相似图片同时进入 train 和 validation
   - 训练时会按组大小自动降权，使用 `1 / sqrt(组内图片数)` 作为组权重，降低大量近重复图片对 loss 的放大作用
