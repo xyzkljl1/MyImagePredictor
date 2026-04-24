@@ -211,9 +211,33 @@ public sealed class ExecutionLogScope : IDisposable
                 return;
             }
 
-            foreach (var ch in value)
+            for (var i = 0; i < value.Length; i++)
             {
-                AppendToFileLineBuffer(ch);
+                var ch = value[i];
+                if (ch == '\r')
+                {
+                    // Treat CRLF inside a single write as a normal newline so exception
+                    // messages and other multiline strings are preserved in the log.
+                    if (i + 1 < value.Length && value[i + 1] == '\n')
+                    {
+                        FlushCurrentFileLine(writeEmptyLineIfBufferEmpty: true);
+                        i++;
+                        continue;
+                    }
+
+                    // A lone carriage return is still used by progress bars to overwrite
+                    // the current console line, so keep the compact log behavior there.
+                    _currentFileLine.Clear();
+                    continue;
+                }
+
+                if (ch == '\n')
+                {
+                    FlushCurrentFileLine(writeEmptyLineIfBufferEmpty: true);
+                    continue;
+                }
+
+                _currentFileLine.Append(ch);
             }
         }
 

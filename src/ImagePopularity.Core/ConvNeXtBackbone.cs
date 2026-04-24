@@ -41,7 +41,7 @@ internal static class ConvNeXtFactory
         var backbone = new ConvNeXtFeatureExtractor(spec);
         if (!string.IsNullOrWhiteSpace(weightsFile))
         {
-            backbone.load(weightsFile);
+            TryLoadWeights(backbone, weightsFile);
         }
 
         backbone.to(device);
@@ -56,6 +56,26 @@ internal static class ConvNeXtFactory
     public static string GetDefaultWeightsFileName(string backboneName)
     {
         return Specs[backboneName].DefaultWeightsFileName;
+    }
+
+    private static void TryLoadWeights(ConvNeXtFeatureExtractor backbone, string weightsFile)
+    {
+        try
+        {
+            backbone.load(weightsFile);
+            Console.WriteLine($"Loaded pretrained backbone weights: {weightsFile}");
+        }
+        catch (ArgumentException ex) when (LooksLikeIncompatiblePyTorchStateDict(weightsFile, ex))
+        {
+            Console.WriteLine(
+                $"Warning: pretrained ConvNeXt weights are stored as an official PyTorch state_dict and cannot be loaded directly by the current TorchSharp ConvNeXt implementation. Continuing with random ConvNeXt initialization. File: {weightsFile}");
+        }
+    }
+
+    private static bool LooksLikeIncompatiblePyTorchStateDict(string weightsFile, ArgumentException exception)
+    {
+        return weightsFile.EndsWith(".pth", StringComparison.OrdinalIgnoreCase) &&
+               exception.Message.Contains("Mismatched state_dict sizes", StringComparison.Ordinal);
     }
 
     private sealed record ConvNeXtSpec(

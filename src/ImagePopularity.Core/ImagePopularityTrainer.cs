@@ -129,7 +129,7 @@ public sealed class ImagePopularityTrainer
 
         Console.WriteLine($"Device: {_device.type}");
         Console.WriteLine($"Backbone: {_options.Backbone}");
-        Console.WriteLine("Use pretrained backbone: true (forced)");
+        Console.WriteLine("Use pretrained backbone: requested (ConvNeXt official .pth weights are used when compatible; otherwise training falls back to random initialization with a warning).");
         Console.WriteLine($"Train image size: {_options.TrainImageSize}");
         Console.WriteLine($"Recommended inference image size: {_options.TrainImageSize} (auto = train-image-size)");
         Console.WriteLine($"Decision threshold: {_options.DecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)}");
