@@ -710,6 +710,17 @@ public sealed class ImagePopularityTrainer
             .Select(path => CreateSample(path, 0f))
             .ToList();
 
+        var allValidationPaths = validationPopular
+            .Select(sample => sample.ImagePath)
+            .Concat(validationUnpopular.Select(sample => sample.ImagePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        trainPopular = trainPopular
+            .Where(sample => !allValidationPaths.Contains(sample.ImagePath))
+            .ToList();
+        trainUnpopular = trainUnpopular
+            .Where(sample => !allValidationPaths.Contains(sample.ImagePath))
+            .ToList();
+
         if (_options.EnableGroupAwareTraining)
         {
             var validationPopularGroups = validationPopular.Select(sample => sample.EffectiveGroupKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -778,10 +789,7 @@ public sealed class ImagePopularityTrainer
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return Directory
-            .EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-            .Where(SupportedImageFiles.IsSupported)
-            .Where(path => normalizedExcluded is null || !IsUnderAnyDirectory(path, normalizedExcluded));
+        return EnumerateImagesAndTextReferences(directory, normalizedExcluded);
     }
 
     private static IEnumerable<string> EnumerateImagesStatic(string directory)
@@ -791,9 +799,101 @@ public sealed class ImagePopularityTrainer
             return Array.Empty<string>();
         }
 
-        return Directory
-            .EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-            .Where(SupportedImageFiles.IsSupported);
+        return EnumerateImagesAndTextReferences(directory, excludedDirectories: null);
+    }
+
+    private static IEnumerable<string> EnumerateImagesAndTextReferences(string directory, IReadOnlyList<string>? excludedDirectories)
+    {
+        var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+        {
+            if (excludedDirectories is not null && IsUnderAnyDirectory(path, excludedDirectories))
+            {
+                continue;
+            }
+
+            if (SupportedImageFiles.IsSupported(path))
+            {
+                results.Add(Path.GetFullPath(path));
+                continue;
+            }
+
+            if (!string.Equals(Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var referencedImagePath in EnumerateTextReferencedImages(path, excludedDirectories))
+            {
+                results.Add(referencedImagePath);
+            }
+        }
+
+        return results;
+    }
+
+    private static IEnumerable<string> EnumerateTextReferencedImages(string textFilePath, IReadOnlyList<string>? excludedDirectories)
+    {
+        var textFileDirectory = Path.GetDirectoryName(textFilePath) ?? Directory.GetCurrentDirectory();
+        var lineNumber = 0;
+
+        foreach (var rawLine in File.ReadLines(textFilePath))
+        {
+            lineNumber++;
+            var referencedImagePath = TryResolveReferencedImagePath(rawLine, textFileDirectory);
+            if (referencedImagePath is null)
+            {
+                continue;
+            }
+
+            if (excludedDirectories is not null && IsUnderAnyDirectory(referencedImagePath, excludedDirectories))
+            {
+                continue;
+            }
+
+            if (!SupportedImageFiles.IsSupported(referencedImagePath))
+            {
+                Console.WriteLine($"Skip unsupported image reference in {textFilePath}:{lineNumber} -> {referencedImagePath}");
+                continue;
+            }
+
+            if (!File.Exists(referencedImagePath))
+            {
+                Console.WriteLine($"Skip missing image reference in {textFilePath}:{lineNumber} -> {referencedImagePath}");
+                continue;
+            }
+
+            yield return referencedImagePath;
+        }
+    }
+
+    private static string? TryResolveReferencedImagePath(string rawLine, string textFileDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return null;
+        }
+
+        var trimmed = rawLine.Trim();
+        if (trimmed.Length == 0 ||
+            trimmed.StartsWith("#", StringComparison.Ordinal) ||
+            trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        trimmed = trimmed.Trim('"');
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        var resolved = Path.IsPathRooted(trimmed)
+            ? trimmed
+            : Path.Combine(textFileDirectory, trimmed);
+
+        return Path.GetFullPath(resolved);
     }
 
     private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) SplitStratified(
@@ -905,11 +1005,12 @@ public sealed class ImagePopularityTrainer
 
     private static LabeledImageSample CreateSample(string imagePath, float label)
     {
-        var parsedGroupId = TryParseLeadingGroupId(imagePath);
+        var normalizedImagePath = Path.GetFullPath(imagePath);
+        var parsedGroupId = TryParseLeadingGroupId(normalizedImagePath);
         var effectiveGroupKey = parsedGroupId is not null
             ? $"g:{parsedGroupId}"
-            : $"f:{Path.GetFullPath(imagePath)}";
-        return new LabeledImageSample(imagePath, label, effectiveGroupKey, parsedGroupId, 1f);
+            : $"f:{normalizedImagePath}";
+        return new LabeledImageSample(normalizedImagePath, label, effectiveGroupKey, parsedGroupId, 1f);
     }
 
     private static string? TryParseLeadingGroupId(string imagePath)

@@ -286,7 +286,7 @@ Usage:
     [--output-model <prefix>] \
     [--preprocess-cache-dir models/preprocess-cache] \
     [--train-image-size 320] \
-    [--backbone resnet152] \
+    [--backbone convnext_large] \
     [--pretrained-weights <path>] \
     [--freeze-backbone-epochs 3] \
     [--enable-augmentation true] \
@@ -316,7 +316,11 @@ Notes:
   validation subdirectories under both --popular-dir and --unpopular-dir.
   Pass it multiple times or separate names with ',' / ';'. Images under all
   existing validation subdirectories are used as validation data and excluded
-  from the training set. Missing validation subdirectories are ignored. The
+  from the training set. Every scanned train/validation directory tree also
+  reads any .txt files it contains; each non-empty line is treated as an
+  image path and merged into that split, with explicit validation references
+  taking priority over training if the same image path appears in both.
+  Missing validation subdirectories are ignored. The
   combined explicit validation image count must also be at least
   total-images * validation-split.
   If --validation-dir is omitted, validation data is chosen by random
@@ -333,8 +337,10 @@ Notes:
   behavior and fall back to the original sample-level logic.
   Preprocess cache is always enabled for training.
   Pretrained backbone is always enabled.
-  If --pretrained-weights is omitted, the trainer will auto-download
-  TorchSharp-compatible ImageNet weights.
+  Supported backbones: convnext_tiny / convnext_small / convnext_base /
+  convnext_large.
+  If --pretrained-weights is omitted, the trainer will auto-download the
+  official ConvNeXt ImageNet weights from download.pytorch.org.
 """;
     }
 

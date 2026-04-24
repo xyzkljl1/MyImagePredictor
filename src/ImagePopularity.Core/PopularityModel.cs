@@ -188,23 +188,15 @@ public sealed class PopularityModel : Module<Tensor, Tensor>
 
     private static IReadOnlyList<BackboneStage> BuildBackboneStages(Module<Tensor, Tensor> backbone, string backboneName)
     {
-        if (!backboneName.StartsWith("resnet", StringComparison.Ordinal))
-        {
-            return Array.Empty<BackboneStage>();
-        }
-
         var stages = new List<BackboneStage>();
-
-        var stemModules = new List<object>();
-        AddIfModuleExists(stemModules, backbone, "conv1");
-        AddIfModuleExists(stemModules, backbone, "bn1");
-        AddStageIfAny(stages, "stem", stemModules);
-
-        foreach (var stageName in new[] { "layer1", "layer2", "layer3", "layer4" })
+        if (backboneName.StartsWith("convnext", StringComparison.Ordinal))
         {
-            var modules = new List<object>();
-            AddIfModuleExists(modules, backbone, stageName);
-            AddStageIfAny(stages, stageName, modules);
+            foreach (var stageName in new[] { "stem", "stage1", "stage2", "stage3", "stage4" })
+            {
+                var modules = new List<object>();
+                AddIfModuleExists(modules, backbone, stageName);
+                AddStageIfAny(stages, stageName, modules);
+            }
         }
 
         return stages;
@@ -270,10 +262,10 @@ public sealed class PopularityModel : Module<Tensor, Tensor>
     {
         return stageName switch
         {
-            "layer4" => 0.75,
-            "layer3" => 0.5,
-            "layer2" => 0.25,
-            "layer1" => 0.15,
+            "stage4" => 0.75,
+            "stage3" => 0.5,
+            "stage2" => 0.25,
+            "stage1" => 0.15,
             "stem" => 0.10,
             _ => 0.25
         };

@@ -4,7 +4,7 @@ namespace ImagePopularity.Core;
 
 public sealed class ImagePopularityTrainingOptions
 {
-    public const double DefaultDecisionThreshold = 0.45;
+    public const double DefaultDecisionThreshold = 0.5;
     public const int DefaultEarlyStoppingPatience = 4;
     public const double DefaultEarlyStoppingMinDelta = 0.01;
 

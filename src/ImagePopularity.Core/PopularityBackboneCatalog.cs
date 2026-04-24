@@ -1,41 +1,33 @@
-using TorchSharp;
-using static TorchSharp.torch;
-using static TorchSharp.torch.nn;
-
 namespace ImagePopularity.Core;
 
 public static class PopularityBackboneCatalog
 {
-    private const string DefaultBackboneName = "resnet152";
+    private const string DefaultBackboneName = "convnext_large";
 
     private static readonly IReadOnlyDictionary<string, BackboneSpec> Specs =
         new Dictionary<string, BackboneSpec>(StringComparer.Ordinal)
         {
-            ["resnet18"] = new(
-                FeatureDimension: 512,
-                DefaultWeightsFileName: "ResNet18_Weights.IMAGENET1K_V1",
-                Factory: (weightsFile, device) => TorchSharp.torchvision.models.resnet18(weights_file: weightsFile, skipfc: true, device: device)),
-            ["resnet34"] = new(
-                FeatureDimension: 512,
-                DefaultWeightsFileName: "ResNet34_Weights.IMAGENET1K_V1",
-                Factory: (weightsFile, device) => TorchSharp.torchvision.models.resnet34(weights_file: weightsFile, skipfc: true, device: device)),
-            ["resnet50"] = new(
-                FeatureDimension: 2048,
-                DefaultWeightsFileName: "ResNet50_Weights.IMAGENET1K_V2",
-                Factory: (weightsFile, device) => TorchSharp.torchvision.models.resnet50(weights_file: weightsFile, skipfc: true, device: device)),
-            ["resnet101"] = new(
-                FeatureDimension: 2048,
-                DefaultWeightsFileName: "ResNet101_Weights.IMAGENET1K_V2",
-                Factory: (weightsFile, device) => TorchSharp.torchvision.models.resnet101(weights_file: weightsFile, skipfc: true, device: device)),
-            ["resnet152"] = new(
-                FeatureDimension: 2048,
-                DefaultWeightsFileName: "ResNet152_Weights.IMAGENET1K_V2",
-                Factory: (weightsFile, device) => TorchSharp.torchvision.models.resnet152(weights_file: weightsFile, skipfc: true, device: device))
+            ["convnexttiny"] = new(
+                DisplayName: "convnext_tiny",
+                FeatureDimension: ConvNeXtFactory.GetFeatureDimension("convnexttiny"),
+                DefaultWeightsFileName: ConvNeXtFactory.GetDefaultWeightsFileName("convnexttiny")),
+            ["convnextsmall"] = new(
+                DisplayName: "convnext_small",
+                FeatureDimension: ConvNeXtFactory.GetFeatureDimension("convnextsmall"),
+                DefaultWeightsFileName: ConvNeXtFactory.GetDefaultWeightsFileName("convnextsmall")),
+            ["convnextbase"] = new(
+                DisplayName: "convnext_base",
+                FeatureDimension: ConvNeXtFactory.GetFeatureDimension("convnextbase"),
+                DefaultWeightsFileName: ConvNeXtFactory.GetDefaultWeightsFileName("convnextbase")),
+            ["convnextlarge"] = new(
+                DisplayName: "convnext_large",
+                FeatureDimension: ConvNeXtFactory.GetFeatureDimension("convnextlarge"),
+                DefaultWeightsFileName: ConvNeXtFactory.GetDefaultWeightsFileName("convnextlarge"))
         };
 
     public static string DefaultBackbone => DefaultBackboneName;
 
-    public static string SupportedList => string.Join("/", Specs.Keys);
+    public static string SupportedList => string.Join("/", Specs.Values.Select(spec => spec.DisplayName));
 
     public static string Normalize(string? backbone)
     {
@@ -57,9 +49,14 @@ public static class PopularityBackboneCatalog
         return Specs.ContainsKey(Normalize(backbone));
     }
 
-    public static Module<Tensor, Tensor> CreateBackbone(string backboneName, string? weightsFile, Device device)
+    public static TorchSharp.torch.nn.Module<TorchSharp.torch.Tensor, TorchSharp.torch.Tensor> CreateBackbone(
+        string backboneName,
+        string? weightsFile,
+        TorchSharp.torch.Device device)
     {
-        return GetSpec(backboneName).Factory(weightsFile, device);
+        var normalized = Normalize(backboneName);
+        GetSpec(normalized);
+        return ConvNeXtFactory.CreateBackbone(normalized, weightsFile, device);
     }
 
     public static int GetFeatureDimension(string backboneName)
@@ -84,7 +81,7 @@ public static class PopularityBackboneCatalog
     }
 
     private sealed record BackboneSpec(
+        string DisplayName,
         int FeatureDimension,
-        string DefaultWeightsFileName,
-        Func<string?, Device, Module<Tensor, Tensor>> Factory);
+        string DefaultWeightsFileName);
 }

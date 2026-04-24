@@ -68,7 +68,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
   --validation-dir validation \
   --output-model all_ \
   --preprocess-cache-dir models\preprocess-cache \
-  --backbone resnet152 \
+  --backbone convnext_large \
   --freeze-backbone-epochs 3 \
   --epochs 30 \
   --batch-size 256 \
@@ -89,7 +89,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 
 训练会输出：
 
-- 模型权重：自动命名，例如 `models/all_9000_320_a1_t045_e30b256s42_04212210.pt`
+- 模型权重：自动命名，例如 `models/all_9000_320_a1_t05_e30b256s42_04212210.pt`
 - 元信息：与模型同名的 `.meta.json` 文件
 
 `--output-model` 现在只表示“自动命名模型文件名前缀”，不是路径，也不会改变模型输出目录。
@@ -105,6 +105,8 @@ dotnet run --project src/ImagePopularity.Trainer -- \
   中的图片用作验证集。
 - 如果同时传入多个验证子目录，程序会把所有**实际存在**的验证子目录里的图片合并起来作为验证集。
 - 这些验证子目录中的图片会自动从训练集中排除，所以即使验证集目录嵌在训练目录内部，也不会被同时用于训练。
+- 在训练集目录树或验证集目录树中，程序也会读取其中的 `.txt` 文件；每个 `.txt` 的每一行都被当作一张图片路径并并入对应的数据集。
+- 如果显式验证目录中的图片或 `.txt` 引用路径，与训练目录（或训练目录中的 `.txt`）引用到了同一张图，那么**验证集优先**，该图片会从训练集中排除。
 - 如果其中一个或多个验证子目录不存在，程序会直接忽略这些不存在的目录，不会报错，也不会回退到随机切分。
 - 程序最终只按“所有实际存在的验证子目录中的图片总数”判断是否足够；如果这个总数小于 `总图片数 × validation-split`，程序会直接报错并停止训练。
 
@@ -114,11 +116,12 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 - 前 `--freeze-backbone-epochs` 个 epoch 冻结骨干网络，只训练分类头，先稳定收敛。
 - 之后改为**渐进解冻**：每个 epoch 逐步多解冻一个 backbone stage，而不是一次性全部解冻。
 - 解冻后的微调会使用**分层学习率**：分类头学习率最高，越靠前的 backbone stage 学习率缩放越小。
-- 当前默认骨干为 `resnet152`。
+- 当前默认骨干为 `convnext_large`，支持 `convnext_tiny / convnext_small / convnext_base / convnext_large`。
 - 训练预处理缓存始终启用，默认目录 `models/preprocess-cache`，可通过 `--preprocess-cache-dir` 指定。
 - 训练缓存内容为“增强 + PadResize + Normalize”后的 `float32 CHW` 张量（`train` 子目录）；验证缓存为“PadResize + Normalize”后的张量（`validation` 子目录）。
+- 预处理缓存仍然始终按**图片文件自身的实际路径**建 key；无论这张图是直接位于训练/验证目录里，还是通过该目录下的 `.txt` 文件被引入，缓存命中逻辑都一致。
 - `Trainer` 不再提供 `--inference-image-size` 参数，模型元数据中的“推荐推理尺寸”会自动等于 `--train-image-size`；推理时你仍可在 `Demo/API` 里传入 `inferenceImageSize` 覆盖。
-- 训练时使用固定决策阈值 `0.45` 计算 `Train Acc / Val Acc`，并将该阈值写入模型元数据与自动命名文件名（例如 `t045`）。
+- 训练时使用固定决策阈值 `0.5` 计算 `Train Acc / Val Acc`，并将该阈值写入模型元数据与自动命名文件名（例如 `t05`）。
 - 验证阶段仍会自动在一组候选阈值上扫描，并记录该轮更合适的辅助阈值；这个阈值会写回模型元数据与自动命名文件名，但它**不参与主要训练目标的定义**。
 - 当前 best model 的主目标是：**先满足 `Popular Loss < 0.5`，再让 `Unpopular Loss` 尽可能低，最后才比较总 `Val Loss`**。
 - 已启用 early stopping：从“解冻骨干后的下一轮”开始生效，`patience=4`，`min_delta=0.01`；在 `Popular Loss < 0.5` 之前优先监控 `Popular Loss`，达到该条件后优先监控 `Unpopular Loss`。
@@ -133,7 +136,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 如果你已经有本地预训练权重文件，可指定：
 
 ```powershell
---pretrained-weights D:\weights\ResNet50_Weights.IMAGENET1K_V2
+--pretrained-weights D:\weights\convnext_large-ea097f82.pth
 ```
 
 ## 3. 类库推理 API
@@ -144,7 +147,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 using ImagePopularity.Core;
 
 using var predictor = new ImagePopularityPredictor(
-    modelPath: @"models\all_9000_320_a1_t045_e30b256s42_04212210.pt",
+modelPath: @"models\all_9000_320_a1_t05_e30b256s42_04212210.pt",
     options: new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384, // 可与训练分辨率不同
@@ -167,7 +170,7 @@ var imagePaths = Directory.EnumerateFiles(@"D:\data\candidates", "*", SearchOpti
     .OrderBy(path => path)
     .ToList();
 
-using var predictor = new ImagePopularityPredictor(@"models\all_9000_320_a1_t045_e30b256s42_04212210.pt",
+using var predictor = new ImagePopularityPredictor(@"models\all_9000_320_a1_t05_e30b256s42_04212210.pt",
     new ImagePopularityPredictorOptions
     {
         InferenceImageSize = 384,
@@ -189,7 +192,7 @@ for (var i = 0; i < imagePaths.Count; i++)
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  all_9000_320_a1_t045_e30b256s42_04212210.pt \
+  all_9000_320_a1_t05_e30b256s42_04212210.pt \
   D:\data\candidates
 ```
 
@@ -197,7 +200,7 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 ```powershell
 dotnet run --project src/ImagePopularity.Demo -- \
-  all_9000_320_a1_t045_e30b256s42_04212210.pt \
+  all_9000_320_a1_t05_e30b256s42_04212210.pt \
   D:\data\candidates \
   0 \
   64 \
@@ -215,7 +218,7 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 参数说明（按位置顺序）：
 
-- 第 1 个参数 `model`：模型文件名，例如 `all_9000_320_a1_t045_e30b256s42_04212210.pt`；Demo 会自动从 `models` 目录下查找该模型文件。
+- 第 1 个参数 `model`：模型文件名，例如 `all_9000_320_a1_t05_e30b256s42_04212210.pt`；Demo 会自动从 `models` 目录下查找该模型文件。
 - 第 2 个参数 `imageDirectory`：待批量预测的图片目录；会递归读取子目录中的受支持图片。
 - 第 3 个参数 `maxPredictionCount`：最大预测数量，整数，可选；如果传入且大于 `0`，则只会从目录中按排序后的顺序取前 `N` 张图片参与预测；如果不传或传入 `0` / 负数，则表示不限制数量。
 - 第 4 个参数 `batchSize`：批量推理大小，整数，默认 `64`。越大通常吞吐越高，但显存占用也越高。
@@ -253,7 +256,7 @@ dotnet run --project src/ImagePopularity.Demo -- \
 
 以下为单卡 5090 级别的经验区间，实际取决于磁盘读图速度、CPU 解码能力和 batch 设置：
 
-- `resnet152 + train-image-size 320 + batch-size 256`：
+- `convnext_large + train-image-size 320 + batch-size 256`：
   1 个 epoch 约 `2~6` 分钟，20 epoch 约 `40~120` 分钟
 - 显存占用通常在 `14~30 GB` 区间（训练）
 - 推理（batch 512~1024）通常在 `4~10 GB` 区间

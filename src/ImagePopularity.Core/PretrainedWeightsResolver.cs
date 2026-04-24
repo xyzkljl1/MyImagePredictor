@@ -4,7 +4,7 @@ namespace ImagePopularity.Core;
 
 internal static class PretrainedWeightsResolver
 {
-    private const string BaseUrl = "https://huggingface.co/yueyinqiu/vision-TorchSharp/resolve/main";
+    private const string BaseUrl = "https://download.pytorch.org/models";
     private static readonly string DefaultCacheDirectory = Path.Combine("models", "pretrained");
 
     private static readonly HttpClient HttpClient = new()
@@ -38,7 +38,7 @@ internal static class PretrainedWeightsResolver
         }
 
         var url = $"{BaseUrl}/{fileName}";
-        Console.WriteLine($"Downloading pretrained weights for {options.Backbone} from: {url}");
+        Console.WriteLine($"Downloading official pretrained weights for {options.Backbone} from: {url}");
         DownloadFile(url, targetPath).GetAwaiter().GetResult();
         Console.WriteLine($"Pretrained weights downloaded: {targetPath}");
 
