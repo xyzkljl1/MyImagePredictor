@@ -62,6 +62,8 @@ public sealed class ImagePopularityTrainingOptions
 
     public double EarlyStoppingMinDelta { get; init; } = DefaultEarlyStoppingMinDelta;
 
+    public bool EnableGroupAwareTraining { get; init; }
+
     public string BuildInProgressOutputModelPath(int trainSampleCount)
     {
         return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal: null));
@@ -69,22 +71,27 @@ public sealed class ImagePopularityTrainingOptions
 
     public string BuildCompletedAutoOutputModelPath(DateTimeOffset completedAtLocal, int trainSampleCount)
     {
-        return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal));
+        return BuildCompletedAutoOutputModelPath(completedAtLocal, trainSampleCount, decisionThresholdOverride: null);
     }
 
-    private string BuildGeneratedModelFileName(int trainSampleCount, DateTimeOffset? completedAtLocal)
+    public string BuildCompletedAutoOutputModelPath(DateTimeOffset completedAtLocal, int trainSampleCount, double? decisionThresholdOverride)
+    {
+        return Path.Combine("models", BuildGeneratedModelFileName(trainSampleCount, completedAtLocal, decisionThresholdOverride));
+    }
+
+    private string BuildGeneratedModelFileName(int trainSampleCount, DateTimeOffset? completedAtLocal, double? decisionThresholdOverride = null)
     {
         var augmentationTag = EnableAugmentation ? "a1" : "a0";
-        var thresholdTag = BuildThresholdTag();
+        var thresholdTag = BuildThresholdTag(decisionThresholdOverride ?? DecisionThreshold);
         var timestampSuffix = completedAtLocal is null
             ? string.Empty
             : $"_{completedAtLocal.Value.ToString("MMddHHmm", CultureInfo.InvariantCulture)}";
         return $"{OutputModelPrefix}{trainSampleCount}_{TrainImageSize}_{augmentationTag}_{thresholdTag}_e{Epochs}b{BatchSize}s{Seed}{timestampSuffix}.pt";
     }
 
-    private string BuildThresholdTag()
+    private static string BuildThresholdTag(double threshold)
     {
-        var numeric = DecisionThreshold
+        var numeric = threshold
             .ToString("0.##", CultureInfo.InvariantCulture)
             .Replace(".", string.Empty, StringComparison.Ordinal);
 

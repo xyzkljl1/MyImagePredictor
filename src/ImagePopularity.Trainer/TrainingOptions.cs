@@ -30,7 +30,8 @@ internal sealed class TrainingOptions
         "brightness-jitter",
         "contrast-jitter",
         "saturation-jitter",
-        "min-random-crop-scale"
+        "min-random-crop-scale",
+        "enable-group-aware-training"
     };
 
     public required string PopularDirectory { get; init; }
@@ -80,6 +81,8 @@ internal sealed class TrainingOptions
     public double SaturationJitter { get; init; } = 0.15;
 
     public double MinRandomCropScale { get; init; } = 0.85;
+
+    public bool EnableGroupAwareTraining { get; init; }
 
     public static TrainingOptions Parse(string[] args)
     {
@@ -187,6 +190,7 @@ internal sealed class TrainingOptions
         var contrastJitter = ReadDouble(map, "contrast-jitter", 0.15);
         var saturationJitter = ReadDouble(map, "saturation-jitter", 0.15);
         var minRandomCropScale = ReadDouble(map, "min-random-crop-scale", 0.85);
+        var enableGroupAwareTraining = ReadBool(map, "enable-group-aware-training", false);
         var outputModelPrefix = ParseOutputModelPrefix(
             map.TryGetValue("output-model", out var outputModel) ? outputModel : null);
 
@@ -217,7 +221,8 @@ internal sealed class TrainingOptions
             BrightnessJitter = brightnessJitter,
             ContrastJitter = contrastJitter,
             SaturationJitter = saturationJitter,
-            MinRandomCropScale = minRandomCropScale
+            MinRandomCropScale = minRandomCropScale,
+            EnableGroupAwareTraining = enableGroupAwareTraining
         };
 
         if (!PopularityModelConfig.IsSupportedBackbone(options.Backbone))
@@ -291,6 +296,7 @@ Usage:
     [--contrast-jitter 0.15] \
     [--saturation-jitter 0.15] \
     [--min-random-crop-scale 0.85] \
+    [--enable-group-aware-training false] \
     [--epochs 20] \
     [--batch-size 128] \
     [--learning-rate 0.0003] \
@@ -318,6 +324,10 @@ Notes:
   The trainer always auto-generates the rest of the model file name using train
   sample count, image size, augmentation flag, decision threshold, epochs,
   batch size, seed, and training completion time (month/day/hour/minute).
+  When --enable-group-aware-training is true, the trainer will infer a group id
+  from the numeric prefix before the first '_' in each file name, use it for
+  group-aware train/validation separation, down-weight larger near-duplicate
+  groups during training, and limit per-batch repeats from the same group.
   Preprocess cache is always enabled for training.
   Pretrained backbone is always enabled.
   If --pretrained-weights is omitted, the trainer will auto-download
@@ -352,7 +362,8 @@ Notes:
             BrightnessJitter = BrightnessJitter,
             ContrastJitter = ContrastJitter,
             SaturationJitter = SaturationJitter,
-            MinRandomCropScale = MinRandomCropScale
+            MinRandomCropScale = MinRandomCropScale,
+            EnableGroupAwareTraining = EnableGroupAwareTraining
         };
     }
 

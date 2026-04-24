@@ -10,6 +10,11 @@ public sealed class ImagePopularityTrainer
     : IDisposable
 {
     private const double BytesPerGiB = 1024d * 1024d * 1024d;
+    private const double GroupWeightExponent = 0.5d;
+    private const int MaxSameGroupPerTrainingBatch = 2;
+    private const double ThresholdScanMinimum = 0.20d;
+    private const double ThresholdScanMaximum = 0.70d;
+    private const double ThresholdScanStep = 0.01d;
 
     private readonly ImagePopularityTrainingOptions _options;
     private readonly Device _device;
@@ -83,6 +88,9 @@ public sealed class ImagePopularityTrainer
         var bestModelPromoted = false;
         ExceptionDispatchInfo? capturedException = null;
         string? pendingFinalOutputPath = null;
+        double bestSavedBalancedAccuracy = double.MinValue;
+        double bestSavedValidationLoss = double.MaxValue;
+        double bestSavedDecisionThreshold = _options.DecisionThreshold;
 
         var (trainSamples, validationSamples) = LoadDatasets();
         if (trainSamples.Count + validationSamples.Count < 100)
@@ -128,13 +136,21 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine($"Pretrained weights: {pretrainedWeightsFile}");
         Console.WriteLine("Training batch strategy: balanced P/U batches (minority oversampled when needed).");
         Console.WriteLine("Fine-tune strategy: progressive backbone unfreezing with layer-wise learning-rate scaling.");
+        Console.WriteLine(
+            _options.EnableGroupAwareTraining
+                ? $"Group-aware training: enabled (group split, group down-weighting 1/n^{GroupWeightExponent.ToString("0.##", CultureInfo.InvariantCulture)}, max {MaxSameGroupPerTrainingBatch} sample(s) per group per batch)."
+                : "Group-aware training: disabled.");
         var trainPopularCount = trainSamples.Count(x => x.Label > 0.5f);
         var trainUnpopularCount = trainSamples.Count - trainPopularCount;
         var validationPopularCount = validationSamples.Count(x => x.Label > 0.5f);
         var validationUnpopularCount = validationSamples.Count - validationPopularCount;
-        Console.WriteLine($"Popular train samples: {trainPopularCount}, Unpopular train samples: {trainUnpopularCount}");
-        Console.WriteLine($"Popular validation samples: {validationPopularCount}, Unpopular validation samples: {validationUnpopularCount}");
-        Console.WriteLine($"Train samples: {trainSamples.Count}, Validation samples: {validationSamples.Count}");
+        var trainPopularGroupCount = CountDistinctGroups(trainSamples.Where(x => x.Label > 0.5f));
+        var trainUnpopularGroupCount = CountDistinctGroups(trainSamples.Where(x => x.Label < 0.5f));
+        var validationPopularGroupCount = CountDistinctGroups(validationSamples.Where(x => x.Label > 0.5f));
+        var validationUnpopularGroupCount = CountDistinctGroups(validationSamples.Where(x => x.Label < 0.5f));
+        Console.WriteLine($"Popular train samples: {trainPopularCount} (groups: {trainPopularGroupCount}), Unpopular train samples: {trainUnpopularCount} (groups: {trainUnpopularGroupCount})");
+        Console.WriteLine($"Popular validation samples: {validationPopularCount} (groups: {validationPopularGroupCount}), Unpopular validation samples: {validationUnpopularCount} (groups: {validationUnpopularGroupCount})");
+        Console.WriteLine($"Train samples: {trainSamples.Count} (groups: {CountDistinctGroups(trainSamples)}), Validation samples: {validationSamples.Count} (groups: {CountDistinctGroups(validationSamples)})");
 
         if (HasMoreThanTwoTimesImbalance(trainPopularCount, trainUnpopularCount))
         {
@@ -253,18 +269,29 @@ public sealed class ImagePopularityTrainer
                     var validationBreakdownText = valMetrics.HasClassBreakdown
                         ? $" | L(P/U) = {valMetrics.PopularLoss:F4}/{valMetrics.UnpopularLoss:F4}, A(P/U) = {valMetrics.PopularAccuracy:P2}/{valMetrics.UnpopularAccuracy:P2}"
                         : string.Empty;
+                    var thresholdSummaryText = !double.IsNaN(valMetrics.DecisionThresholdUsed)
+                        ? $" | Thr={valMetrics.DecisionThresholdUsed.ToString("0.##", CultureInfo.InvariantCulture)} | BAcc={valMetrics.BalancedAccuracy:P2}"
+                        : string.Empty;
 
                     Console.WriteLine(
                         $"Epoch {epoch}/{_options.Epochs} | " +
                         $"LR={FormatLearningRate(currentLearningRate)} | " +
                         $"Train Loss={trainMetrics.Loss:F4}, Train Acc={trainMetrics.Accuracy:P2} | " +
                         $"Val Loss={valMetrics.Loss:F4}, Val Acc={valMetrics.Accuracy:P2}" +
-                        $"{validationBreakdownText} | " +
+                        $"{validationBreakdownText}" +
+                        $"{thresholdSummaryText} | " +
                         $"Time(T/V/E)={FormatElapsed(trainMetrics.Duration)}/{FormatElapsed(valMetrics.Duration)}/{FormatElapsed(epochStopwatch.Elapsed)}");
 
-                    if (valMetrics.Loss < bestValidationLoss)
+                    if (IsBetterBestModelCandidate(
+                        valMetrics.BalancedAccuracy,
+                        valMetrics.Loss,
+                        bestSavedBalancedAccuracy,
+                        bestSavedValidationLoss))
                     {
-                        bestValidationLoss = valMetrics.Loss;
+                        bestValidationLoss = Math.Min(bestValidationLoss, valMetrics.Loss);
+                        bestSavedBalancedAccuracy = valMetrics.BalancedAccuracy;
+                        bestSavedValidationLoss = valMetrics.Loss;
+                        bestSavedDecisionThreshold = valMetrics.DecisionThresholdUsed;
                         model.save(modelOutputPath);
                         bestModelSaved = true;
 
@@ -278,14 +305,15 @@ public sealed class ImagePopularityTrainer
                             Epochs = epoch,
                             TrainSamples = trainSamples.Count,
                             ValidationSamples = validationSamples.Count,
-                            DecisionThreshold = _options.DecisionThreshold,
+                            DecisionThreshold = bestSavedDecisionThreshold,
                             TrainedDevice = _device.type.ToString(),
                             TrainedAtUtc = DateTimeOffset.UtcNow
                         };
 
                         metadata.Save(modelOutputPath);
 
-                        Console.WriteLine($"Saved best model: {modelOutputPath} (Val Loss={bestValidationLoss:F4})");
+                        Console.WriteLine(
+                            $"Saved best model: {modelOutputPath} (BAcc={bestSavedBalancedAccuracy:P2}, Val Loss={bestSavedValidationLoss:F4}, Thr={bestSavedDecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)})");
                     }
 
                     if (valMetrics.Loss < bestEarlyStoppingValidationLoss - _options.EarlyStoppingMinDelta)
@@ -307,7 +335,7 @@ public sealed class ImagePopularityTrainer
 
                 if (bestModelSaved)
                 {
-                    pendingFinalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count);
+                    pendingFinalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count, bestSavedDecisionThreshold);
                 }
 
                 totalStopwatch.Stop();
@@ -318,7 +346,7 @@ public sealed class ImagePopularityTrainer
 
                 if (bestModelSaved && pendingFinalOutputPath is null)
                 {
-                    pendingFinalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count);
+                    pendingFinalOutputPath = _options.BuildCompletedAutoOutputModelPath(DateTimeOffset.Now, trainSamples.Count, bestSavedDecisionThreshold);
                 }
 
                 capturedException = ExceptionDispatchInfo.Capture(ex);
@@ -392,6 +420,9 @@ public sealed class ImagePopularityTrainer
         double unpopularLoss = 0;
         long unpopularCorrect = 0;
         long unpopularCount = 0;
+        double totalWeight = 0;
+        List<float>? validationProbabilities = isTraining ? null : new List<float>(samples.Count);
+        List<float>? validationLabels = isTraining ? null : new List<float>(samples.Count);
 
         using var noGrad = isTraining ? null : torch.no_grad();
         var plannedBatches = Math.Max(1, (int)Math.Ceiling(samples.Count / (double)_options.BatchSize));
@@ -412,6 +443,7 @@ public sealed class ImagePopularityTrainer
             {
                 using var inputs = batch.Inputs.to(_device);
                 using var labels = batch.Labels.to(_device);
+                using var sampleWeights = batch.SampleWeights.to(_device);
 
                 if (isTraining)
                 {
@@ -420,7 +452,7 @@ public sealed class ImagePopularityTrainer
 
                 using var logits = model.forward(inputs);
                 using var perSampleLoss = nn.functional.softplus(logits) - (logits * labels);
-                using var loss = perSampleLoss.mean();
+                using var loss = (perSampleLoss * sampleWeights).sum() / sampleWeights.sum();
 
                 if (isTraining)
                 {
@@ -430,7 +462,8 @@ public sealed class ImagePopularityTrainer
                 }
 
                 var batchSize = labels.shape[0];
-                totalLoss += perSampleLoss.sum().item<float>();
+                totalLoss += (perSampleLoss * sampleWeights).sum().item<float>();
+                totalWeight += sampleWeights.sum().item<float>();
 
                 using var probabilities = torch.sigmoid(logits);
                 using var predictions = torch.ge(probabilities, _options.DecisionThreshold);
@@ -443,6 +476,9 @@ public sealed class ImagePopularityTrainer
 
                 if (!isTraining)
                 {
+                    validationProbabilities!.AddRange(probabilities.to(CPU).data<float>().ToArray());
+                    validationLabels!.AddRange(labels.to(CPU).data<float>().ToArray());
+
                     using var popularMask = torch.ge(labels, 0.5);
                     using var unpopularMask = torch.lt(labels, 0.5);
 
@@ -468,6 +504,10 @@ public sealed class ImagePopularityTrainer
                 }
 
                 var avgLoss = totalCount == 0 ? 0 : totalLoss / totalCount;
+                if (isTraining && totalWeight > 0)
+                {
+                    avgLoss = totalLoss / totalWeight;
+                }
                 var avgAccuracy = totalCount == 0 ? 0 : totalCorrect / (double)totalCount;
                 progress.Report(processedBatches, $"loss={avgLoss:F4} acc={avgAccuracy:P2}");
             }
@@ -475,12 +515,17 @@ public sealed class ImagePopularityTrainer
             {
                 batch.Inputs.Dispose();
                 batch.Labels.Dispose();
+                batch.SampleWeights.Dispose();
             }
         }
 
         var metrics = new EpochMetrics
         {
-            Loss = totalCount == 0 ? double.MaxValue : totalLoss / totalCount,
+            Loss = totalCount == 0
+                ? double.MaxValue
+                : isTraining && totalWeight > 0
+                    ? totalLoss / totalWeight
+                    : totalLoss / totalCount,
             Accuracy = totalCount == 0 ? 0 : totalCorrect / (double)totalCount,
             Duration = phaseStopwatch.Elapsed,
             PopularLoss = popularCount == 0 ? 0 : popularLoss / popularCount,
@@ -488,8 +533,26 @@ public sealed class ImagePopularityTrainer
             PopularCount = popularCount,
             UnpopularLoss = unpopularCount == 0 ? 0 : unpopularLoss / unpopularCount,
             UnpopularAccuracy = unpopularCount == 0 ? 0 : unpopularCorrect / (double)unpopularCount,
-            UnpopularCount = unpopularCount
+            UnpopularCount = unpopularCount,
+            DecisionThresholdUsed = _options.DecisionThreshold,
+            BalancedAccuracy = popularCount == 0 || unpopularCount == 0
+                ? totalCount == 0 ? 0 : totalCorrect / (double)totalCount
+                : ((popularCorrect / (double)popularCount) + (unpopularCorrect / (double)unpopularCount)) / 2d
         };
+
+        if (!isTraining && validationProbabilities is not null && validationLabels is not null && validationProbabilities.Count > 0)
+        {
+            var thresholdMetrics = FindBestValidationThreshold(validationProbabilities, validationLabels, _options.DecisionThreshold);
+            metrics = metrics with
+            {
+                Accuracy = thresholdMetrics.Accuracy,
+                PopularAccuracy = thresholdMetrics.PopularAccuracy,
+                UnpopularAccuracy = thresholdMetrics.UnpopularAccuracy,
+                DecisionThresholdUsed = thresholdMetrics.DecisionThreshold,
+                BalancedAccuracy = thresholdMetrics.BalancedAccuracy
+            };
+        }
+
         progress.Complete($"loss={metrics.Loss:F4} acc={metrics.Accuracy:P2}");
 
         return metrics;
@@ -514,6 +577,7 @@ public sealed class ImagePopularityTrainer
             var count = Math.Min(batchSize, ordered.Count - start);
             var features = new float[count * imageTensorSize];
             var labels = new float[count];
+            var weights = new float[count];
 
             var valid = 0;
 
@@ -526,6 +590,7 @@ public sealed class ImagePopularityTrainer
                     var chw = cache.LoadChw(sample.ImagePath);
                     Array.Copy(chw, 0, features, valid * imageTensorSize, imageTensorSize);
                     labels[valid] = sample.Label;
+                    weights[valid] = sample.TrainingWeight;
                     valid++;
                 }
                 catch (Exception ex)
@@ -543,14 +608,17 @@ public sealed class ImagePopularityTrainer
             {
                 Array.Resize(ref features, valid * imageTensorSize);
                 Array.Resize(ref labels, valid);
+                Array.Resize(ref weights, valid);
             }
 
             var inputTensor = torch.tensor(features, dtype: ScalarType.Float32)
                 .reshape(valid, 3, _options.TrainImageSize, _options.TrainImageSize);
             var labelTensor = torch.tensor(labels, dtype: ScalarType.Float32)
                 .reshape(valid, 1);
+            var weightTensor = torch.tensor(weights, dtype: ScalarType.Float32)
+                .reshape(valid, 1);
 
-            yield return new TrainingBatch(inputTensor, labelTensor);
+            yield return new TrainingBatch(inputTensor, labelTensor, weightTensor);
         }
     }
 
@@ -568,11 +636,11 @@ public sealed class ImagePopularityTrainer
     private IReadOnlyList<LabeledImageSample> LoadSamplesForRandomSplit()
     {
         var popular = EnumerateImages(_options.PopularDirectory)
-            .Select(path => new LabeledImageSample(path, 1f))
+            .Select(path => CreateSample(path, 1f))
             .ToList();
 
         var unpopular = EnumerateImages(_options.UnpopularDirectory)
-            .Select(path => new LabeledImageSample(path, 0f))
+            .Select(path => CreateSample(path, 0f))
             .ToList();
 
         if (_options.MaxSamplesPerClass > 0)
@@ -588,13 +656,19 @@ public sealed class ImagePopularityTrainer
                 .ToList();
         }
 
+        if (_options.EnableGroupAwareTraining)
+        {
+            popular = ApplyTrainingWeights(popular);
+            unpopular = ApplyTrainingWeights(unpopular);
+        }
+
         if (popular.Count == 0 || unpopular.Count == 0)
         {
             throw new InvalidOperationException("Both popular and unpopular directories must contain images.");
         }
 
-        Console.WriteLine($"Popular images: {popular.Count}");
-        Console.WriteLine($"Unpopular images: {unpopular.Count}");
+        Console.WriteLine($"Popular images: {popular.Count} (groups: {CountDistinctGroups(popular)})");
+        Console.WriteLine($"Unpopular images: {unpopular.Count} (groups: {CountDistinctGroups(unpopular)})");
         Console.WriteLine($"Validation selection: random stratified split ({_options.ValidationSplit:P0})");
 
         return [.. popular, .. unpopular];
@@ -606,10 +680,10 @@ public sealed class ImagePopularityTrainer
         var unpopularValidationDirectories = ResolveExistingValidationDirectories(_options.UnpopularDirectory, validationDirectories);
 
         var trainPopular = EnumerateImages(_options.PopularDirectory, excludedDirectories: popularValidationDirectories)
-            .Select(path => new LabeledImageSample(path, 1f))
+            .Select(path => CreateSample(path, 1f))
             .ToList();
         var trainUnpopular = EnumerateImages(_options.UnpopularDirectory, excludedDirectories: unpopularValidationDirectories)
-            .Select(path => new LabeledImageSample(path, 0f))
+            .Select(path => CreateSample(path, 0f))
             .ToList();
 
         if (_options.MaxSamplesPerClass > 0)
@@ -626,11 +700,25 @@ public sealed class ImagePopularityTrainer
         }
 
         var validationPopular = EnumerateImagesFromDirectories(popularValidationDirectories)
-            .Select(path => new LabeledImageSample(path, 1f))
+            .Select(path => CreateSample(path, 1f))
             .ToList();
         var validationUnpopular = EnumerateImagesFromDirectories(unpopularValidationDirectories)
-            .Select(path => new LabeledImageSample(path, 0f))
+            .Select(path => CreateSample(path, 0f))
             .ToList();
+
+        if (_options.EnableGroupAwareTraining)
+        {
+            var validationPopularGroups = validationPopular.Select(sample => sample.EffectiveGroupKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var validationUnpopularGroups = validationUnpopular.Select(sample => sample.EffectiveGroupKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            trainPopular = trainPopular
+                .Where(sample => !validationPopularGroups.Contains(sample.EffectiveGroupKey))
+                .ToList();
+            trainUnpopular = trainUnpopular
+                .Where(sample => !validationUnpopularGroups.Contains(sample.EffectiveGroupKey))
+                .ToList();
+            trainPopular = ApplyTrainingWeights(trainPopular);
+            trainUnpopular = ApplyTrainingWeights(trainUnpopular);
+        }
 
         if (trainPopular.Count == 0 || trainUnpopular.Count == 0)
         {
@@ -646,10 +734,10 @@ public sealed class ImagePopularityTrainer
                 $"Explicit validation set is too small: found {validationCount} image(s), but at least {minimumValidationCount} are required by validation-split={_options.ValidationSplit.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}.");
         }
 
-        Console.WriteLine($"Popular train images: {trainPopular.Count}");
-        Console.WriteLine($"Unpopular train images: {trainUnpopular.Count}");
-        Console.WriteLine($"Popular validation images: {validationPopular.Count}");
-        Console.WriteLine($"Unpopular validation images: {validationUnpopular.Count}");
+        Console.WriteLine($"Popular train images: {trainPopular.Count} (groups: {CountDistinctGroups(trainPopular)})");
+        Console.WriteLine($"Unpopular train images: {trainUnpopular.Count} (groups: {CountDistinctGroups(trainUnpopular)})");
+        Console.WriteLine($"Popular validation images: {validationPopular.Count} (groups: {CountDistinctGroups(validationPopular)})");
+        Console.WriteLine($"Unpopular validation images: {validationUnpopular.Count} (groups: {CountDistinctGroups(validationUnpopular)})");
         Console.WriteLine($"Validation selection: explicit subdirectories [{string.Join(", ", validationDirectories)}]");
         Console.WriteLine($"Existing popular validation directories: {FormatDirectoryList(popularValidationDirectories)}");
         Console.WriteLine($"Existing unpopular validation directories: {FormatDirectoryList(unpopularValidationDirectories)}");
@@ -708,6 +796,11 @@ public sealed class ImagePopularityTrainer
         IReadOnlyList<LabeledImageSample> all,
         double validationSplit)
     {
+        if (_options.EnableGroupAwareTraining)
+        {
+            return SplitStratifiedByGroup(all, validationSplit);
+        }
+
         var popular = all.Where(x => x.Label > 0.5f).OrderBy(_ => _random.Next()).ToList();
         var unpopular = all.Where(x => x.Label < 0.5f).OrderBy(_ => _random.Next()).ToList();
 
@@ -725,6 +818,123 @@ public sealed class ImagePopularityTrainer
             .ToList();
 
         return (train, validation);
+    }
+
+    private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) SplitStratifiedByGroup(
+        IReadOnlyList<LabeledImageSample> all,
+        double validationSplit)
+    {
+        var (trainPopular, validationPopular) = SplitClassByGroup(all.Where(x => x.Label > 0.5f).ToList(), validationSplit);
+        var (trainUnpopular, validationUnpopular) = SplitClassByGroup(all.Where(x => x.Label < 0.5f).ToList(), validationSplit);
+
+        var train = ApplyTrainingWeights(trainPopular)
+            .Concat(ApplyTrainingWeights(trainUnpopular))
+            .OrderBy(_ => _random.Next())
+            .ToList();
+        var validation = validationPopular
+            .Concat(validationUnpopular)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+
+        return (train, validation);
+    }
+
+    private (List<LabeledImageSample> Train, List<LabeledImageSample> Validation) SplitClassByGroup(
+        IReadOnlyList<LabeledImageSample> samples,
+        double validationSplit)
+    {
+        var grouped = samples
+            .GroupBy(sample => sample.EffectiveGroupKey, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(_ => _random.Next())
+            .ToList();
+
+        var targetValidationCount = Math.Max(1, (int)Math.Round(samples.Count * validationSplit));
+        var validationGroups = new List<IGrouping<string, LabeledImageSample>>();
+        var trainGroups = new List<IGrouping<string, LabeledImageSample>>();
+        var currentValidationCount = 0;
+
+        foreach (var group in grouped)
+        {
+            if (currentValidationCount < targetValidationCount)
+            {
+                validationGroups.Add(group);
+                currentValidationCount += group.Count();
+            }
+            else
+            {
+                trainGroups.Add(group);
+            }
+        }
+
+        if (trainGroups.Count == 0 && validationGroups.Count > 1)
+        {
+            trainGroups.Add(validationGroups[^1]);
+            currentValidationCount -= validationGroups[^1].Count();
+            validationGroups.RemoveAt(validationGroups.Count - 1);
+        }
+
+        var validation = validationGroups.SelectMany(group => group).ToList();
+        var train = trainGroups.SelectMany(group => group).ToList();
+        return (train, validation);
+    }
+
+    private List<LabeledImageSample> ApplyTrainingWeights(IReadOnlyList<LabeledImageSample> samples)
+    {
+        if (!_options.EnableGroupAwareTraining || samples.Count == 0)
+        {
+            return samples.ToList();
+        }
+
+        var groupSizes = samples
+            .GroupBy(sample => sample.EffectiveGroupKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+
+        return samples
+            .Select(sample =>
+            {
+                var groupSize = groupSizes[sample.EffectiveGroupKey];
+                var weight = (float)(1d / Math.Pow(groupSize, GroupWeightExponent));
+                return sample with { TrainingWeight = weight };
+            })
+            .ToList();
+    }
+
+    private static LabeledImageSample CreateSample(string imagePath, float label)
+    {
+        var parsedGroupId = TryParseLeadingGroupId(imagePath);
+        var effectiveGroupKey = parsedGroupId is not null
+            ? $"g:{parsedGroupId}"
+            : $"f:{Path.GetFullPath(imagePath)}";
+        return new LabeledImageSample(imagePath, label, effectiveGroupKey, parsedGroupId, 1f);
+    }
+
+    private static string? TryParseLeadingGroupId(string imagePath)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(imagePath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return null;
+        }
+
+        var underscoreIndex = fileName.IndexOf('_');
+        var candidate = underscoreIndex >= 0
+            ? fileName[..underscoreIndex]
+            : fileName;
+
+        if (candidate.Length == 0 || !candidate.All(char.IsDigit))
+        {
+            return null;
+        }
+
+        return candidate;
+    }
+
+    private static int CountDistinctGroups(IEnumerable<LabeledImageSample> samples)
+    {
+        return samples
+            .Select(sample => sample.EffectiveGroupKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
     }
 
     private void ShuffleInPlace<T>(IList<T> values)
@@ -761,8 +971,11 @@ public sealed class ImagePopularityTrainer
         for (var batch = 0; batch < batches; batch++)
         {
             var currentBatch = new List<LabeledImageSample>(batchSize);
-            AddCycledSamples(popular, popularPerBatch, currentBatch, ref popularIndex);
-            AddCycledSamples(unpopular, unpopularPerBatch, currentBatch, ref unpopularIndex);
+            Dictionary<string, int>? batchGroupCounts = _options.EnableGroupAwareTraining
+                ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                : null;
+            AddCycledSamples(popular, popularPerBatch, currentBatch, ref popularIndex, batchGroupCounts);
+            AddCycledSamples(unpopular, unpopularPerBatch, currentBatch, ref unpopularIndex, batchGroupCounts);
             ShuffleInPlace(currentBatch);
             ordered.AddRange(currentBatch);
         }
@@ -774,23 +987,44 @@ public sealed class ImagePopularityTrainer
         IList<LabeledImageSample> source,
         int count,
         ICollection<LabeledImageSample> destination,
-        ref int index)
+        ref int index,
+        IDictionary<string, int>? batchGroupCounts)
     {
         if (source.Count == 0 || count <= 0)
         {
             return;
         }
 
-        for (var i = 0; i < count; i++)
+        var added = 0;
+        var attempts = 0;
+        var maxAttempts = Math.Max(source.Count * 3, count * 4);
+
+        while (added < count && attempts < maxAttempts)
         {
+            attempts++;
+
             if (index >= source.Count)
             {
                 ShuffleInPlace(source);
                 index = 0;
             }
 
-            destination.Add(source[index]);
+            var sample = source[index];
             index++;
+
+            if (batchGroupCounts is not null)
+            {
+                batchGroupCounts.TryGetValue(sample.EffectiveGroupKey, out var existingCount);
+                if (existingCount >= MaxSameGroupPerTrainingBatch)
+                {
+                    continue;
+                }
+
+                batchGroupCounts[sample.EffectiveGroupKey] = existingCount + 1;
+            }
+
+            destination.Add(sample);
+            added++;
         }
     }
 
@@ -832,6 +1066,111 @@ public sealed class ImagePopularityTrainer
                 gradient.mul_(parameterGroup.LearningRateScale);
             }
         }
+    }
+
+    private static bool IsBetterBestModelCandidate(
+        double candidateBalancedAccuracy,
+        double candidateLoss,
+        double currentBestBalancedAccuracy,
+        double currentBestLoss)
+    {
+        const double tolerance = 1e-9;
+
+        if (candidateBalancedAccuracy > currentBestBalancedAccuracy + tolerance)
+        {
+            return true;
+        }
+
+        if (Math.Abs(candidateBalancedAccuracy - currentBestBalancedAccuracy) <= tolerance &&
+            candidateLoss < currentBestLoss - tolerance)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static ThresholdMetrics FindBestValidationThreshold(
+        IReadOnlyList<float> probabilities,
+        IReadOnlyList<float> labels,
+        double defaultThreshold)
+    {
+        var best = EvaluateThreshold(probabilities, labels, defaultThreshold);
+
+        for (var threshold = ThresholdScanMinimum; threshold <= ThresholdScanMaximum + 1e-9; threshold += ThresholdScanStep)
+        {
+            var metrics = EvaluateThreshold(probabilities, labels, threshold);
+            if (metrics.BalancedAccuracy > best.BalancedAccuracy + 1e-9)
+            {
+                best = metrics;
+                continue;
+            }
+
+            if (Math.Abs(metrics.BalancedAccuracy - best.BalancedAccuracy) <= 1e-9 &&
+                metrics.Accuracy > best.Accuracy + 1e-9)
+            {
+                best = metrics;
+                continue;
+            }
+
+            if (Math.Abs(metrics.BalancedAccuracy - best.BalancedAccuracy) <= 1e-9 &&
+                Math.Abs(metrics.Accuracy - best.Accuracy) <= 1e-9 &&
+                Math.Abs(threshold - defaultThreshold) <
+                Math.Abs(best.DecisionThreshold - defaultThreshold))
+            {
+                best = metrics;
+            }
+        }
+
+        return best;
+    }
+
+    private static ThresholdMetrics EvaluateThreshold(
+        IReadOnlyList<float> probabilities,
+        IReadOnlyList<float> labels,
+        double threshold)
+    {
+        long totalCorrect = 0;
+        long popularCorrect = 0;
+        long popularCount = 0;
+        long unpopularCorrect = 0;
+        long unpopularCount = 0;
+
+        for (var i = 0; i < probabilities.Count; i++)
+        {
+            var label = labels[i] >= 0.5f;
+            var prediction = probabilities[i] >= threshold;
+            if (prediction == label)
+            {
+                totalCorrect++;
+            }
+
+            if (label)
+            {
+                popularCount++;
+                if (prediction)
+                {
+                    popularCorrect++;
+                }
+            }
+            else
+            {
+                unpopularCount++;
+                if (!prediction)
+                {
+                    unpopularCorrect++;
+                }
+            }
+        }
+
+        var accuracy = probabilities.Count == 0 ? 0 : totalCorrect / (double)probabilities.Count;
+        var popularAccuracy = popularCount == 0 ? 0 : popularCorrect / (double)popularCount;
+        var unpopularAccuracy = unpopularCount == 0 ? 0 : unpopularCorrect / (double)unpopularCount;
+        var balancedAccuracy = popularCount == 0 || unpopularCount == 0
+            ? accuracy
+            : (popularAccuracy + unpopularAccuracy) / 2d;
+
+        return new ThresholdMetrics(threshold, accuracy, popularAccuracy, unpopularAccuracy, balancedAccuracy);
     }
 
     private int GetTrainableBackboneStageCountForEpoch(PopularityModel model, int epoch)
@@ -1123,11 +1462,16 @@ public sealed class ImagePopularityTrainer
         return null;
     }
 
-    private readonly record struct LabeledImageSample(string ImagePath, float Label);
+    private readonly record struct LabeledImageSample(
+        string ImagePath,
+        float Label,
+        string EffectiveGroupKey,
+        string? ParsedGroupId,
+        float TrainingWeight);
 
-    private readonly record struct TrainingBatch(Tensor Inputs, Tensor Labels);
+    private readonly record struct TrainingBatch(Tensor Inputs, Tensor Labels, Tensor SampleWeights);
 
-    private sealed class EpochMetrics
+    private sealed record EpochMetrics
     {
         public double Loss { get; init; }
 
@@ -1147,8 +1491,19 @@ public sealed class ImagePopularityTrainer
 
         public long UnpopularCount { get; init; }
 
+        public double DecisionThresholdUsed { get; init; } = double.NaN;
+
+        public double BalancedAccuracy { get; init; }
+
         public bool HasClassBreakdown => PopularCount > 0 || UnpopularCount > 0;
     }
+
+    private readonly record struct ThresholdMetrics(
+        double DecisionThreshold,
+        double Accuracy,
+        double PopularAccuracy,
+        double UnpopularAccuracy,
+        double BalancedAccuracy);
 
     private readonly record struct EpochTiming(int Epoch, TimeSpan TrainDuration, TimeSpan ValidationDuration, TimeSpan TotalDuration);
 
