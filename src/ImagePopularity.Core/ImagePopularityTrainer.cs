@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.ExceptionServices;
+using System.Text;
 using TorchSharp;
 using static TorchSharp.torch;
 
@@ -1828,66 +1829,310 @@ public sealed class ImagePopularityTrainer
         {
             try
             {
-                using var process = new Process
+                var dedicatedStatus = QueryDedicatedGpuMemoryUsage(deviceIndex);
+                if (OperatingSystem.IsWindows() &&
+                    dedicatedStatus is not null &&
+                    QueryTotalCommittedGpuMemoryUsage(dedicatedStatus) is { } totalCommittedStatus)
                 {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = "nvidia-smi",
-                        Arguments = "--query-gpu=memory.used --format=csv,noheader,nounits",
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    }
-                };
-
-                if (!process.Start())
-                {
-                    return null;
+                    return totalCommittedStatus;
                 }
 
-                if (!process.WaitForExit(1500))
-                {
-                    try
-                    {
-                        process.Kill(entireProcessTree: true);
-                    }
-                    catch
-                    {
-                    }
-
-                    return null;
-                }
-
-                if (process.ExitCode != 0)
-                {
-                    return null;
-                }
-
-                var lines = process.StandardOutput
-                    .ReadToEnd()
-                    .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-                if (lines.Length == 0)
-                {
-                    return null;
-                }
-
-                var lineIndex = deviceIndex is >= 0 and < int.MaxValue && deviceIndex.Value < lines.Length
-                    ? deviceIndex.Value
-                    : 0;
-
-                if (!double.TryParse(lines[lineIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var usedMiB))
-                {
-                    return null;
-                }
-
-                return $"vram={usedMiB / 1024d:F2}GB";
+                return dedicatedStatus;
             }
             catch
             {
                 return null;
             }
+        }
+
+        private static string? QueryDedicatedGpuMemoryUsage(int? deviceIndex)
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "nvidia-smi",
+                    Arguments = "--query-gpu=index,memory.used --format=csv,noheader,nounits",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            if (!process.Start())
+            {
+                return null;
+            }
+
+            if (!process.WaitForExit(1500))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                }
+
+                return null;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var lines = process.StandardOutput
+                .ReadToEnd()
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (lines.Length == 0)
+            {
+                return null;
+            }
+
+            var samples = new List<GpuMemorySample>(lines.Length);
+            foreach (var line in lines)
+            {
+                var parts = line.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length != 2)
+                {
+                    continue;
+                }
+
+                if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedIndex))
+                {
+                    continue;
+                }
+
+                if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var usedMiB))
+                {
+                    continue;
+                }
+
+                samples.Add(new GpuMemorySample(parsedIndex, usedMiB));
+            }
+
+            if (samples.Count == 0)
+            {
+                return null;
+            }
+
+            var selected = deviceIndex.HasValue
+                ? samples.FirstOrDefault(sample => sample.Index == deviceIndex.Value)
+                : samples.Count == 1
+                    ? samples[0]
+                    : null;
+
+            if (selected is null)
+            {
+                return null;
+            }
+
+            return $"vram={selected.UsedMiB / 1024d:F2}GB";
+        }
+
+        private static string? QueryTotalCommittedGpuMemoryUsage(string dedicatedStatus)
+        {
+            if (!TryParseDisplayedGiB(dedicatedStatus, out var dedicatedGiB))
+            {
+                return null;
+            }
+
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "typeperf",
+                    Arguments = "\"\\GPU Adapter Memory(*)\\Dedicated Usage\" \"\\GPU Adapter Memory(*)\\Total Committed\" -sc 1",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.Unicode,
+                    StandardErrorEncoding = Encoding.Unicode
+                }
+            };
+
+            if (!process.Start())
+            {
+                return null;
+            }
+
+            if (!process.WaitForExit(2000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                }
+
+                return null;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return null;
+            }
+
+            var rows = output
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(line => line.StartsWith("\"", StringComparison.Ordinal))
+                .ToArray();
+
+            if (rows.Length < 2)
+            {
+                return null;
+            }
+
+            var headers = ParseCsvRow(rows[0]);
+            var values = ParseCsvRow(rows[^1]);
+            if (headers.Count != values.Count || headers.Count < 3)
+            {
+                return null;
+            }
+
+            var samples = new Dictionary<string, AdapterMemorySample>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 1; i < headers.Count; i++)
+            {
+                var header = headers[i];
+                if (!TryExtractAdapterCounter(header, out var adapterName, out var isDedicated))
+                {
+                    continue;
+                }
+
+                if (!double.TryParse(values[i], NumberStyles.Float, CultureInfo.InvariantCulture, out var bytes))
+                {
+                    continue;
+                }
+
+                if (!samples.TryGetValue(adapterName, out var sample))
+                {
+                    sample = new AdapterMemorySample(adapterName);
+                    samples[adapterName] = sample;
+                }
+
+                var gib = bytes / BytesPerGiB;
+                if (isDedicated)
+                {
+                    sample.DedicatedGiB = gib;
+                }
+                else
+                {
+                    sample.TotalCommittedGiB = gib;
+                }
+            }
+
+            var resolved = samples.Values
+                .Where(sample => sample.DedicatedGiB.HasValue && sample.TotalCommittedGiB.HasValue)
+                .OrderBy(sample => Math.Abs(sample.DedicatedGiB!.Value - dedicatedGiB))
+                .FirstOrDefault();
+
+            if (resolved?.TotalCommittedGiB is null)
+            {
+                return null;
+            }
+
+            return $"vram={resolved.TotalCommittedGiB.Value:F2}GB";
+        }
+
+        private static bool TryParseDisplayedGiB(string status, out double valueGiB)
+        {
+            valueGiB = 0;
+            if (!status.StartsWith("vram=", StringComparison.OrdinalIgnoreCase) ||
+                !status.EndsWith("GB", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var numeric = status[5..^2];
+            return double.TryParse(numeric, NumberStyles.Float, CultureInfo.InvariantCulture, out valueGiB);
+        }
+
+        private static List<string> ParseCsvRow(string row)
+        {
+            var result = new List<string>();
+            var current = new StringBuilder(row.Length);
+            var inQuotes = false;
+
+            foreach (var ch in row)
+            {
+                if (ch == '"')
+                {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+
+                if (ch == ',' && !inQuotes)
+                {
+                    result.Add(current.ToString());
+                    current.Clear();
+                    continue;
+                }
+
+                current.Append(ch);
+            }
+
+            result.Add(current.ToString());
+            return result;
+        }
+
+        private static bool TryExtractAdapterCounter(string header, out string adapterName, out bool isDedicated)
+        {
+            adapterName = string.Empty;
+            isDedicated = false;
+
+            const string dedicatedSuffix = "\\Dedicated Usage";
+            const string totalCommittedSuffix = "\\Total Committed";
+            const string prefix = "\\GPU Adapter Memory(";
+
+            if (!header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (header.EndsWith(dedicatedSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                isDedicated = true;
+            }
+            else if (header.EndsWith(totalCommittedSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                isDedicated = false;
+            }
+            else
+            {
+                return false;
+            }
+
+            var start = prefix.Length;
+            var end = header.IndexOf(')', start);
+            if (end <= start)
+            {
+                return false;
+            }
+
+            adapterName = header[start..end];
+            return !string.IsNullOrWhiteSpace(adapterName);
+        }
+
+        private sealed record GpuMemorySample(int Index, double UsedMiB);
+
+        private sealed class AdapterMemorySample(string adapterName)
+        {
+            public string AdapterName { get; } = adapterName;
+
+            public double? DedicatedGiB { get; set; }
+
+            public double? TotalCommittedGiB { get; set; }
         }
     }
 }
