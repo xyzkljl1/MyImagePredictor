@@ -103,7 +103,10 @@ public sealed class ImagePopularityTrainer
 
         var pretrainedWeightsFile = PretrainedWeightsResolver.Resolve(_options);
         var modelOutputPath = BuildTemporaryAutoOutputModelPath(_options.BuildInProgressOutputModelPath(trainSamples.Count));
-        var progressMemoryProvider = CreateGpuMemoryStatusProvider();
+        using var progressMemorySampler = CreateGpuMemoryStatusSampler();
+        Func<string?>? progressMemoryProvider = progressMemorySampler is null
+            ? null
+            : () => progressMemorySampler.GetStatus();
 
         Console.WriteLine($"Preprocess cache directory: {Path.GetFullPath(_options.PreprocessCacheDirectory)}");
         Console.WriteLine("Preparing training preprocess cache (augment + pad resize + normalize)...");
@@ -249,7 +252,8 @@ public sealed class ImagePopularityTrainer
                         layerwiseParameterGroups,
                         isTraining: true,
                         epoch,
-                        trainableBackboneStageCount: currentTrainableBackboneStages);
+                        trainableBackboneStageCount: currentTrainableBackboneStages,
+                        progressMemoryProvider: progressMemoryProvider);
                     ThrowIfCancellationRequested();
                     var valMetrics = RunEpoch(
                         model,
@@ -258,7 +262,8 @@ public sealed class ImagePopularityTrainer
                         layerwiseParameterGroups: Array.Empty<PopularityModel.LayerwiseParameterGroup>(),
                         isTraining: false,
                         epoch,
-                        trainableBackboneStageCount: currentTrainableBackboneStages);
+                        trainableBackboneStageCount: currentTrainableBackboneStages,
+                        progressMemoryProvider: progressMemoryProvider);
                     epochStopwatch.Stop();
 
                     epochTimings.Add(new EpochTiming(
@@ -393,7 +398,8 @@ public sealed class ImagePopularityTrainer
         IReadOnlyList<PopularityModel.LayerwiseParameterGroup> layerwiseParameterGroups,
         bool isTraining,
         int epoch,
-        int trainableBackboneStageCount)
+        int trainableBackboneStageCount,
+        Func<string?>? progressMemoryProvider)
     {
         var phaseStopwatch = Stopwatch.StartNew();
 
@@ -428,7 +434,7 @@ public sealed class ImagePopularityTrainer
             phaseLabel,
             plannedBatches,
             clearOnComplete: true,
-            dynamicStatusProvider: CreateGpuMemoryStatusProvider());
+            dynamicStatusProvider: progressMemoryProvider);
 
         var cache = isTraining ? _trainPreprocessedImageCache : _validationPreprocessedImageCache;
         var processedBatches = 0;
@@ -628,13 +634,13 @@ public sealed class ImagePopularityTrainer
 
     private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) LoadDatasets()
     {
-        if (_options.ValidationDirectories.Count == 0)
+        if (_options.ValidationFileNames.Count == 0)
         {
             var allSamples = LoadSamplesForRandomSplit();
             return SplitStratified(allSamples, _options.ValidationSplit);
         }
 
-        return LoadSamplesFromExplicitValidationDirectories(_options.ValidationDirectories);
+        return LoadSamplesFromExplicitValidationFiles(_options.ValidationFileNames);
     }
 
     private IReadOnlyList<LabeledImageSample> LoadSamplesForRandomSplit()
@@ -678,15 +684,15 @@ public sealed class ImagePopularityTrainer
         return [.. popular, .. unpopular];
     }
 
-    private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) LoadSamplesFromExplicitValidationDirectories(IReadOnlyList<string> validationDirectories)
+    private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) LoadSamplesFromExplicitValidationFiles(IReadOnlyList<string> validationFileNames)
     {
-        var popularValidationDirectories = ResolveExistingValidationDirectories(_options.PopularDirectory, validationDirectories);
-        var unpopularValidationDirectories = ResolveExistingValidationDirectories(_options.UnpopularDirectory, validationDirectories);
+        var popularValidationFiles = ResolveExistingValidationFiles(_options.PopularDirectory, validationFileNames);
+        var unpopularValidationFiles = ResolveExistingValidationFiles(_options.UnpopularDirectory, validationFileNames);
 
-        var trainPopular = EnumerateImages(_options.PopularDirectory, excludedDirectories: popularValidationDirectories)
+        var trainPopular = EnumerateImages(_options.PopularDirectory)
             .Select(path => CreateSample(path, 1f))
             .ToList();
-        var trainUnpopular = EnumerateImages(_options.UnpopularDirectory, excludedDirectories: unpopularValidationDirectories)
+        var trainUnpopular = EnumerateImages(_options.UnpopularDirectory)
             .Select(path => CreateSample(path, 0f))
             .ToList();
 
@@ -703,10 +709,10 @@ public sealed class ImagePopularityTrainer
                 .ToList();
         }
 
-        var validationPopular = EnumerateImagesFromDirectories(popularValidationDirectories)
+        var validationPopular = EnumerateValidationImagesFromFiles(popularValidationFiles)
             .Select(path => CreateSample(path, 1f))
             .ToList();
-        var validationUnpopular = EnumerateImagesFromDirectories(unpopularValidationDirectories)
+        var validationUnpopular = EnumerateValidationImagesFromFiles(unpopularValidationFiles)
             .Select(path => CreateSample(path, 0f))
             .ToList();
 
@@ -737,7 +743,7 @@ public sealed class ImagePopularityTrainer
 
         if (trainPopular.Count == 0 || trainUnpopular.Count == 0)
         {
-            throw new InvalidOperationException("Explicit validation directories left no training images in one or both classes.");
+            throw new InvalidOperationException("Explicit validation files left no training images in one or both classes.");
         }
 
         var validationCount = validationPopular.Count + validationUnpopular.Count;
@@ -753,9 +759,9 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine($"Unpopular train images: {trainUnpopular.Count} (groups: {CountDistinctGroups(trainUnpopular)})");
         Console.WriteLine($"Popular validation images: {validationPopular.Count} (groups: {CountDistinctGroups(validationPopular)})");
         Console.WriteLine($"Unpopular validation images: {validationUnpopular.Count} (groups: {CountDistinctGroups(validationUnpopular)})");
-        Console.WriteLine($"Validation selection: explicit subdirectories [{string.Join(", ", validationDirectories)}]");
-        Console.WriteLine($"Existing popular validation directories: {FormatDirectoryList(popularValidationDirectories)}");
-        Console.WriteLine($"Existing unpopular validation directories: {FormatDirectoryList(unpopularValidationDirectories)}");
+        Console.WriteLine($"Validation selection: explicit file names [{string.Join(", ", validationFileNames)}]");
+        Console.WriteLine($"Matched popular validation files: {FormatPathList(popularValidationFiles)}");
+        Console.WriteLine($"Matched unpopular validation files: {FormatPathList(unpopularValidationFiles)}");
 
         var train = trainPopular
             .Concat(trainUnpopular)
@@ -769,11 +775,30 @@ public sealed class ImagePopularityTrainer
         return (train, validation);
     }
 
-    private static IEnumerable<string> EnumerateImagesFromDirectories(IReadOnlyList<string> directories)
+    private static IEnumerable<string> EnumerateValidationImagesFromFiles(IReadOnlyList<string> files)
     {
-        return directories
-            .SelectMany(directory => EnumerateImagesStatic(directory))
+        return files
+            .SelectMany(EnumerateValidationImagesFromFile)
             .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> EnumerateValidationImagesFromFile(string path)
+    {
+        if (SupportedImageFiles.IsSupported(path))
+        {
+            yield return Path.GetFullPath(path);
+            yield break;
+        }
+
+        if (!string.Equals(Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
+        {
+            yield break;
+        }
+
+        foreach (var referencedImagePath in EnumerateTextReferencedImages(path, excludedDirectories: null))
+        {
+            yield return referencedImagePath;
+        }
     }
 
     private IEnumerable<string> EnumerateImages(string directory, IReadOnlyList<string>? excludedDirectories = null)
@@ -1486,46 +1511,31 @@ public sealed class ImagePopularityTrainer
         }
     }
 
-    private static IReadOnlyList<string> ResolveExistingValidationDirectories(string classRoot, IReadOnlyList<string> validationDirectories)
+    private static IReadOnlyList<string> ResolveExistingValidationFiles(string classRoot, IReadOnlyList<string> validationFileNames)
     {
-        var existingDirectories = new List<string>();
-        foreach (var validationDirectory in validationDirectories)
+        if (!Directory.Exists(classRoot))
         {
-            var resolved = TryResolveValidationDirectory(classRoot, validationDirectory);
-            if (!string.IsNullOrWhiteSpace(resolved))
-            {
-                existingDirectories.Add(resolved);
-            }
+            return Array.Empty<string>();
         }
 
-        return existingDirectories
+        var requestedFileNames = validationFileNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var matchedFiles = Directory
+            .EnumerateFiles(classRoot, "*", SearchOption.AllDirectories)
+            .Where(path => requestedFileNames.Contains(Path.GetFileName(path)))
+            .Where(path => SupportedImageFiles.IsSupported(path) || string.Equals(Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
+            .Select(Path.GetFullPath)
+            .ToArray();
+
+        return matchedFiles
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
-    private static string? TryResolveValidationDirectory(string classRoot, string validationDirectory)
+    private static string FormatPathList(IReadOnlyList<string> paths)
     {
-        var normalizedRoot = NormalizeDirectoryPath(classRoot);
-        var resolved = NormalizeDirectoryPath(Path.GetFullPath(Path.Combine(normalizedRoot, validationDirectory)));
-
-        if (!IsUnderDirectory(resolved, normalizedRoot))
-        {
-            throw new InvalidOperationException($"validation-dir must stay inside class root. Root={classRoot}, validation-dir={validationDirectory}");
-        }
-
-        if (!Directory.Exists(resolved))
-        {
-            return null;
-        }
-
-        return resolved;
-    }
-
-    private static string FormatDirectoryList(IReadOnlyList<string> directories)
-    {
-        return directories.Count == 0
+        return paths.Count == 0
             ? "(none)"
-            : string.Join(", ", directories);
+            : string.Join(", ", paths);
     }
 
     private static bool IsUnderAnyDirectory(string filePath, IReadOnlyList<string> normalizedDirectories)
@@ -1611,11 +1621,10 @@ public sealed class ImagePopularityTrainer
         }
     }
 
-    private Func<string?> CreateGpuMemoryStatusProvider()
+    private GpuMemoryStatusSampler? CreateGpuMemoryStatusSampler()
     {
         var deviceIndex = TryGetCudaDeviceIndex(_device);
-        var cache = new GpuMemoryStatusCache(deviceIndex);
-        return cache.GetStatus;
+        return new GpuMemoryStatusSampler(deviceIndex);
     }
 
     private static int? TryGetCudaDeviceIndex(Device device)
@@ -1705,29 +1714,73 @@ public sealed class ImagePopularityTrainer
 
     private readonly record struct EpochTiming(int Epoch, TimeSpan TrainDuration, TimeSpan ValidationDuration, TimeSpan TotalDuration);
 
-    private sealed class GpuMemoryStatusCache
+    private sealed class GpuMemoryStatusSampler : IDisposable
     {
         private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1);
 
         private readonly int? _deviceIndex;
-        private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
-        private string? _lastStatus;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _samplingTask;
+        private volatile string? _latestStatus;
+        private bool _disposed;
 
-        public GpuMemoryStatusCache(int? deviceIndex)
+        public GpuMemoryStatusSampler(int? deviceIndex)
         {
             _deviceIndex = deviceIndex;
+            _samplingTask = Task.Run(() => SampleLoopAsync(_cts.Token));
         }
 
         public string? GetStatus()
         {
-            if (_stopwatch.Elapsed < RefreshInterval && _lastStatus is not null)
+            return _latestStatus;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
             {
-                return _lastStatus;
+                return;
             }
 
-            _stopwatch.Restart();
-            _lastStatus = QueryGpuMemoryStatus(_deviceIndex) ?? _lastStatus;
-            return _lastStatus;
+            _disposed = true;
+            _cts.Cancel();
+
+            try
+            {
+                _samplingTask.Wait(TimeSpan.FromSeconds(2));
+            }
+            catch
+            {
+            }
+
+            _cts.Dispose();
+        }
+
+        private async Task SampleLoopAsync(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    var sampledStatus = QueryGpuMemoryStatus(_deviceIndex);
+                    if (!string.IsNullOrWhiteSpace(sampledStatus))
+                    {
+                        _latestStatus = sampledStatus;
+                    }
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    await Task.Delay(RefreshInterval, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
         }
 
         private static string? QueryGpuMemoryStatus(int? deviceIndex)

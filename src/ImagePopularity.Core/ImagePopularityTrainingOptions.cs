@@ -28,7 +28,7 @@ public sealed class ImagePopularityTrainingOptions
 
     public double WeightDecay { get; init; } = 1e-4;
 
-    public IReadOnlyList<string> ValidationDirectories { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> ValidationFileNames { get; init; } = Array.Empty<string>();
 
     public double ValidationSplit { get; init; } = 0.1;
 

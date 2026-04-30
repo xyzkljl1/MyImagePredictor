@@ -54,7 +54,7 @@ internal sealed class TrainingOptions
 
     public double WeightDecay { get; init; } = 1e-4;
 
-    public IReadOnlyList<string> ValidationDirectories { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> ValidationFileNames { get; init; } = Array.Empty<string>();
 
     public double ValidationSplit { get; init; } = 0.1;
 
@@ -92,7 +92,7 @@ internal sealed class TrainingOptions
         }
 
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var validationDirectoryValues = new List<string>();
+        var validationFileNameValues = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -113,7 +113,7 @@ internal sealed class TrainingOptions
 
             if (string.Equals(key, "validation-dir", StringComparison.OrdinalIgnoreCase))
             {
-                validationDirectoryValues.Add(value);
+                validationFileNameValues.Add(value);
                 continue;
             }
 
@@ -176,7 +176,7 @@ internal sealed class TrainingOptions
         var learningRate = ReadDouble(map, "learning-rate", 3e-4);
         var fineTuneLearningRate = ReadDouble(map, "fine-tune-learning-rate", 5e-5);
         var weightDecay = ReadDouble(map, "weight-decay", 1e-4);
-        var validationDirectories = ParseValidationDirectories(validationDirectoryValues);
+        var validationFileNames = ParseValidationFileNames(validationFileNameValues);
         var validationSplit = ReadDouble(map, "validation-split", 0.1);
         var seed = ReadInt(map, "seed", 42);
         var maxSamplesPerClass = ReadInt(map, "max-samples-per-class", 0);
@@ -208,7 +208,7 @@ internal sealed class TrainingOptions
             LearningRate = learningRate,
             FineTuneLearningRate = fineTuneLearningRate,
             WeightDecay = weightDecay,
-            ValidationDirectories = validationDirectories,
+            ValidationFileNames = validationFileNames,
             ValidationSplit = validationSplit,
             Seed = seed,
             MaxSamplesPerClass = maxSamplesPerClass,
@@ -302,7 +302,7 @@ Usage:
     [--learning-rate 0.0003] \
     [--fine-tune-learning-rate 0.00005] \
     [--weight-decay 0.0001] \
-    [--validation-dir validation] \
+    [--validation-dir validation.txt] \
     [--validation-split 0.1] \
     [--max-samples-per-class 0] \
     [--seed 42]
@@ -312,17 +312,15 @@ Notes:
   --unpopular-dir should contain only unpopular images (label=0).
   --output-model is only a file-name prefix, not a path. It must not contain
   '\' or '/'. Generated models are always written under models/.
-  --validation-dir, when provided, is treated as one or more relative
-  validation subdirectories under both --popular-dir and --unpopular-dir.
-  Pass it multiple times or separate names with ',' / ';'. Images under all
-  existing validation subdirectories are used as validation data and excluded
-  from the training set. Every scanned train/validation directory tree also
-  reads any .txt files it contains; each non-empty line is treated as an
-  image path and merged into that split, with explicit validation references
-  taking priority over training if the same image path appears in both.
-  Missing validation subdirectories are ignored. The
-  combined explicit validation image count must also be at least
-  total-images * validation-split.
+  --validation-dir, when provided, is treated as one or more file names to
+  look up recursively under both --popular-dir and --unpopular-dir. Pass it
+  multiple times or separate names with ',' / ';'. Matching image files are
+  used directly as validation data. Matching .txt files are read line by
+  line, and each non-empty line is treated as an image path and merged into
+  the validation set. Explicit validation image references take priority over
+  training if the same image path appears in both. Missing validation file
+  names are ignored. The combined explicit validation image count must also
+  be at least total-images * validation-split.
   If --validation-dir is omitted, validation data is chosen by random
   stratified split controlled by --validation-split.
   The trainer always auto-generates the rest of the model file name using train
@@ -358,7 +356,7 @@ Notes:
             LearningRate = LearningRate,
             FineTuneLearningRate = FineTuneLearningRate,
             WeightDecay = WeightDecay,
-            ValidationDirectories = ValidationDirectories,
+            ValidationFileNames = ValidationFileNames,
             ValidationSplit = ValidationSplit,
             Seed = Seed,
             MaxSamplesPerClass = MaxSamplesPerClass,
@@ -402,9 +400,9 @@ Notes:
         return prefix;
     }
 
-    private static IReadOnlyList<string> ParseValidationDirectories(IEnumerable<string> values)
+    private static IReadOnlyList<string> ParseValidationFileNames(IEnumerable<string> values)
     {
-        var directories = new List<string>();
+        var fileNames = new List<string>();
         foreach (var value in values)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -415,22 +413,22 @@ Notes:
             var segments = value.Split([',', ';'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
             foreach (var segment in segments)
             {
-                var directory = segment.Trim(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                if (string.IsNullOrWhiteSpace(directory))
+                var fileName = segment.Trim();
+                if (string.IsNullOrWhiteSpace(fileName))
                 {
                     continue;
                 }
 
-                if (Path.IsPathRooted(directory))
+                if (fileName.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0)
                 {
-                    throw new ArgumentException("validation-dir must be a relative subdirectory under both popular-dir and unpopular-dir.");
+                    throw new ArgumentException("validation-dir must be a file name only, not a path.");
                 }
 
-                directories.Add(directory);
+                fileNames.Add(fileName);
             }
         }
 
-        return directories
+        return fileNames
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }

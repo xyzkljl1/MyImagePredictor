@@ -40,23 +40,23 @@ dotnet run --project src/ImagePopularity.Trainer -- \
   --unpopular-dir D:\data\unpopular
 ```
 
-使用显式验证集子目录的最小调用命令示例：
+使用显式验证集文件名的最小调用命令示例：
 
 ```powershell
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
   --unpopular-dir D:\data\unpopular \
-  --validation-dir validation
+  --validation-dir validation.txt
 ```
 
-使用多个显式验证集子目录的示例：
+使用多个显式验证集文件名的示例：
 
 ```powershell
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
   --unpopular-dir D:\data\unpopular \
-  --validation-dir validation \
-  --validation-dir holdout
+  --validation-dir validation.txt \
+  --validation-dir holdout.jpg
 ```
 
 全参数调用命令示例：
@@ -65,7 +65,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 dotnet run --project src/ImagePopularity.Trainer -- \
   --popular-dir D:\data\popular \
   --unpopular-dir D:\data\unpopular \
-  --validation-dir validation \
+  --validation-dir validation.txt \
   --output-model all_ \
   --preprocess-cache-dir models\preprocess-cache \
   --backbone convnext_large \
@@ -98,17 +98,19 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 验证集选择说明：
 
 - 不传 `--validation-dir` 时：程序会继续使用原来的随机分层切分，按 `--validation-split` 从正负两类样本中各自抽取一部分作为验证集。
-- 传入 `--validation-dir` 时：它表示相对于 `--popular-dir` 和 `--unpopular-dir` 的一个或多个同名验证子目录；可以重复传入多个 `--validation-dir`，也可以在一个参数里用 `,` 或 `;` 分隔多个目录名。
-- 例如传入 `--validation-dir validation` 后，程序会把：
-  - `D:\data\popular\validation\**`
-  - `D:\data\unpopular\validation\**`
-  中的图片用作验证集。
-- 如果同时传入多个验证子目录，程序会把所有**实际存在**的验证子目录里的图片合并起来作为验证集。
-- 这些验证子目录中的图片会自动从训练集中排除，所以即使验证集目录嵌在训练目录内部，也不会被同时用于训练。
+- 传入 `--validation-dir` 时：它表示要在 `--popular-dir` 和 `--unpopular-dir` 目录树下递归查找的一个或多个**文件名**；可以重复传入多个 `--validation-dir`，也可以在一个参数里用 `,` 或 `;` 分隔多个文件名。
+- 命中的文件如果是图片文件，则该图片直接进入验证集。
+- 命中的文件如果是 `.txt` 文件，则会读取其中每一行图片路径，并把这些图片并入验证集。
+- 例如传入 `--validation-dir validation.txt` 后，程序会在：
+  - `D:\data\popular\**`
+  - `D:\data\unpopular\**`
+  中递归查找所有文件名恰好等于 `validation.txt` 的文件，并将这些 `.txt` 展开的图片作为验证集。
+- 如果同时传入多个验证文件名，程序会把所有**实际命中的图片文件和 `.txt` 文件**展开后的图片合并起来作为验证集。
+- 这些显式验证文件命中的图片会自动从训练集中排除，所以即使同一张图本来位于普通训练目录里，也不会被同时用于训练。
 - 在训练集目录树或验证集目录树中，程序也会读取其中的 `.txt` 文件；每个 `.txt` 的每一行都被当作一张图片路径并并入对应的数据集。
-- 如果显式验证目录中的图片或 `.txt` 引用路径，与训练目录（或训练目录中的 `.txt`）引用到了同一张图，那么**验证集优先**，该图片会从训练集中排除。
-- 如果其中一个或多个验证子目录不存在，程序会直接忽略这些不存在的目录，不会报错，也不会回退到随机切分。
-- 程序最终只按“所有实际存在的验证子目录中的图片总数”判断是否足够；如果这个总数小于 `总图片数 × validation-split`，程序会直接报错并停止训练。
+- 如果显式验证文件命中的图片或 `.txt` 引用路径，与训练目录（或训练目录中的 `.txt`）引用到了同一张图，那么**验证集优先**，该图片会从训练集中排除。
+- 如果其中一个或多个验证文件名在目录树里没有命中任何文件，程序会直接忽略，不会报错，也不会回退到随机切分。
+- 程序最终只按“所有实际命中的验证图片总数”判断是否足够；如果这个总数小于 `总图片数 × validation-split`，程序会直接报错并停止训练。
 
 预训练骨干微调说明：
 
