@@ -8,7 +8,8 @@ import zipfile
 from math import prod
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+DOTNET_TICKS_AT_UNIX_EPOCH = 621355968000000000
 
 
 class _TensorSpec:
@@ -55,6 +56,26 @@ def _load_state_dict(zip_file: zipfile.ZipFile):
     return _StateDictUnpickler(io.BytesIO(data)).load()
 
 
+def _unpack_storage_pid(storage_pid):
+    if (
+        isinstance(storage_pid, tuple)
+        and len(storage_pid) == 5
+        and storage_pid[0] == "storage"
+    ):
+        return storage_pid
+
+    if (
+        isinstance(storage_pid, tuple)
+        and len(storage_pid) >= 2
+        and isinstance(storage_pid[1], tuple)
+        and len(storage_pid[1]) == 5
+        and storage_pid[1][0] == "storage"
+    ):
+        return storage_pid[1]
+
+    raise RuntimeError(f"Unexpected storage descriptor: {storage_pid!r}")
+
+
 def convert(source_path: str, output_directory: str):
     source_path = os.path.abspath(source_path)
     os.makedirs(output_directory, exist_ok=True)
@@ -66,8 +87,7 @@ def convert(source_path: str, output_directory: str):
 
         with open(data_path, "wb") as data_file:
             for name, tensor_spec in state_dict.items():
-                storage_pid = tensor_spec.storage
-                storage_tag, storage_class, storage_key, _location, _storage_size = storage_pid[1]
+                storage_tag, storage_class, storage_key, _location, _storage_size = _unpack_storage_pid(tensor_spec.storage)
                 if storage_tag != "storage":
                     raise RuntimeError(f"Unexpected storage tag for {name}: {storage_tag}")
 
@@ -102,11 +122,12 @@ def convert(source_path: str, output_directory: str):
                 )
 
     stat = os.stat(source_path)
+    source_last_write_time_utc_ticks = DOTNET_TICKS_AT_UNIX_EPOCH + int(stat.st_mtime_ns // 100)
     manifest = {
         "formatVersion": FORMAT_VERSION,
         "sourcePath": source_path,
         "sourceLength": stat.st_size,
-        "sourceLastWriteTimeUtcTicks": int(stat.st_mtime_ns // 100),
+        "sourceLastWriteTimeUtcTicks": source_last_write_time_utc_ticks,
         "tensors": manifest_tensors,
     }
 

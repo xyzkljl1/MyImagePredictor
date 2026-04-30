@@ -49,7 +49,7 @@ public sealed class ConsoleProgressBar : IDisposable
             ? 0
             : Math.Clamp(current, 0, _total);
 
-        if (normalizedCurrent == _lastRenderedCurrent && normalizedCurrent != _total)
+        if (normalizedCurrent == _lastRenderedCurrent)
         {
             return;
         }

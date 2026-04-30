@@ -87,6 +87,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
   --learning-rate 0.0003 \
   --fine-tune-learning-rate 0.00005 \
   --weight-decay 0.0001 \
+  --popular-loss-weight 1.0 \
   --validation-split 0.1
 ```
 
@@ -131,6 +132,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 - 当前 best model 的主目标是：**先满足 `Popular Loss < 0.5`，再让 `Unpopular Loss` 尽可能低，最后才比较总 `Val Loss`**。
 - 已启用 early stopping：从“解冻骨干后的下一轮”开始生效，`patience=4`，`min_delta=0.01`；在 `Popular Loss < 0.5` 之前优先监控 `Popular Loss`，达到该条件后优先监控 `Unpopular Loss`。
 - 训练 batch 使用**平衡 P/U 采样**：每个训练 batch 会尽量保持 `popular/unpopular` 接近 1:1；如果某一类样本较少，会在该 epoch 内对少数类做循环重采样。
+- 可通过 `--popular-loss-weight` 调整 `popular` 样本的训练权重，默认值为 `1.0`。
 - 默认会启用**按组去偏**训练；如需关闭，可传 `--enable-group-aware-training false`：
   - 从文件名中提取第一个 `_` 之前的纯数字作为组号，例如 `123_p123.jpg` 和 `123_456.png` 都属于组 `123`
   - 随机切分训练/验证集时会按组切分，避免同组高相似图片同时进入 train 和 validation

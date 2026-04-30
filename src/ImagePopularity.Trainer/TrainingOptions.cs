@@ -17,6 +17,7 @@ internal sealed class TrainingOptions
         "learning-rate",
         "fine-tune-learning-rate",
         "weight-decay",
+        "popular-loss-weight",
         "validation-dir",
         "validation-split",
         "seed",
@@ -53,6 +54,8 @@ internal sealed class TrainingOptions
     public double FineTuneLearningRate { get; init; } = 5e-5;
 
     public double WeightDecay { get; init; } = 1e-4;
+
+    public double PopularLossWeight { get; init; } = 1.0;
 
     public IReadOnlyList<string> ValidationFileNames { get; init; } = Array.Empty<string>();
 
@@ -180,6 +183,7 @@ internal sealed class TrainingOptions
         var learningRate = ReadDouble(map, "learning-rate", 3e-4);
         var fineTuneLearningRate = ReadDouble(map, "fine-tune-learning-rate", 5e-5);
         var weightDecay = ReadDouble(map, "weight-decay", 1e-4);
+        var popularLossWeight = ReadDouble(map, "popular-loss-weight", 1.0);
         var popularDirectories = ParseDirectoryList(popularDirectoryValues, "popular-dir");
         var unpopularDirectories = ParseDirectoryList(unpopularDirectoryValues, "unpopular-dir");
         var validationFileNames = ParseValidationFileNames(validationFileNameValues);
@@ -214,6 +218,7 @@ internal sealed class TrainingOptions
             LearningRate = learningRate,
             FineTuneLearningRate = fineTuneLearningRate,
             WeightDecay = weightDecay,
+            PopularLossWeight = popularLossWeight,
             ValidationFileNames = validationFileNames,
             ValidationSplit = validationSplit,
             Seed = seed,
@@ -254,6 +259,11 @@ internal sealed class TrainingOptions
         if (options.BatchSize <= 0)
         {
             throw new ArgumentException("batch-size must be > 0.");
+        }
+
+        if (options.PopularLossWeight <= 0)
+        {
+            throw new ArgumentException("popular-loss-weight must be > 0.");
         }
 
         if (options.ValidationSplit is <= 0 or >= 1)
@@ -302,6 +312,7 @@ Usage:
     [--learning-rate 0.0003] \
     [--fine-tune-learning-rate 0.00005] \
     [--weight-decay 0.0001] \
+    [--popular-loss-weight 1.0] \
     [--validation-dir validation.txt] \
     [--validation-split 0.1] \
     [--max-samples-per-class 0] \
@@ -360,6 +371,7 @@ Notes:
             LearningRate = LearningRate,
             FineTuneLearningRate = FineTuneLearningRate,
             WeightDecay = WeightDecay,
+            PopularLossWeight = PopularLossWeight,
             ValidationFileNames = ValidationFileNames,
             ValidationSplit = ValidationSplit,
             Seed = Seed,

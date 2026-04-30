@@ -138,6 +138,7 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine($"Decision threshold: {_options.DecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)}");
         Console.WriteLine($"Data augmentation enabled: {_options.EnableAugmentation}");
         Console.WriteLine($"Pretrained weights: {pretrainedWeightsFile}");
+        Console.WriteLine($"Popular loss weight: {_options.PopularLossWeight.ToString("0.####", CultureInfo.InvariantCulture)}");
         Console.WriteLine("Training batch strategy: balanced P/U batches (minority oversampled when needed).");
         Console.WriteLine("Fine-tune strategy: progressive backbone unfreezing with layer-wise learning-rate scaling.");
         Console.WriteLine(
@@ -1008,20 +1009,32 @@ public sealed class ImagePopularityTrainer
 
     private List<LabeledImageSample> ApplyTrainingWeights(IReadOnlyList<LabeledImageSample> samples)
     {
-        if (!_options.EnableGroupAwareTraining || samples.Count == 0)
+        if (samples.Count == 0)
         {
             return samples.ToList();
         }
 
-        var groupSizes = samples
-            .GroupBy(sample => sample.EffectiveGroupKey, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, int>? groupSizes = null;
+        if (_options.EnableGroupAwareTraining)
+        {
+            groupSizes = samples
+                .GroupBy(sample => sample.EffectiveGroupKey, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+        }
 
         return samples
             .Select(sample =>
             {
-                var groupSize = groupSizes[sample.EffectiveGroupKey];
-                var weight = (float)(1d / Math.Pow(groupSize, GroupWeightExponent));
+                var weight = sample.Label > 0.5f
+                    ? (float)_options.PopularLossWeight
+                    : 1f;
+
+                if (groupSizes is not null)
+                {
+                    var groupSize = groupSizes[sample.EffectiveGroupKey];
+                    weight *= (float)(1d / Math.Pow(groupSize, GroupWeightExponent));
+                }
+
                 return sample with { TrainingWeight = weight };
             })
             .ToList();

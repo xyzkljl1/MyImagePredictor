@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using TorchSharp;
 using static TorchSharp.torch;
 
@@ -27,11 +28,8 @@ internal static class PyTorchStateDictLoader
         {
             var sourcePath = Path.GetFullPath(weightsFile);
             var cacheDirectory = sourcePath + $".torchsharp.v{FormatVersion}";
-            var manifestPath = Path.Combine(cacheDirectory, "manifest.json");
-            var dataPath = Path.Combine(cacheDirectory, "data.bin");
-
-            EnsureConvertedCache(sourcePath, cacheDirectory, manifestPath, dataPath, modelDisplayName);
-            LoadConvertedStateDict(module, sourcePath, manifestPath, dataPath, modelDisplayName);
+            var cachePaths = EnsureConvertedCache(sourcePath, cacheDirectory, modelDisplayName);
+            LoadConvertedStateDict(module, sourcePath, cachePaths.ManifestPath, cachePaths.DataPath, modelDisplayName);
             return true;
         }
         catch (Exception ex)
@@ -42,30 +40,25 @@ internal static class PyTorchStateDictLoader
         }
     }
 
-    private static void EnsureConvertedCache(
+    private static ConvertedCachePaths EnsureConvertedCache(
         string sourcePath,
         string cacheDirectory,
-        string manifestPath,
-        string dataPath,
         string modelDisplayName)
     {
+        var manifestPath = Path.Combine(cacheDirectory, "manifest.json");
+        var dataPath = Path.Combine(cacheDirectory, "data.bin");
         if (TryReadManifest(manifestPath, out var existingManifest) &&
             existingManifest is not null &&
             File.Exists(dataPath) &&
             ManifestMatchesSource(existingManifest, sourcePath))
         {
             Console.WriteLine($"Using cached converted {modelDisplayName} weights: {cacheDirectory}");
-            return;
+            return new ConvertedCachePaths(manifestPath, dataPath);
         }
 
-        Directory.CreateDirectory(cacheDirectory);
         var scriptPath = ResolveConverterScriptPath();
-        var tempDirectory = cacheDirectory + ".tmp";
-
-        if (Directory.Exists(tempDirectory))
-        {
-            Directory.Delete(tempDirectory, recursive: true);
-        }
+        var tempDirectory = cacheDirectory + ".tmp." + Guid.NewGuid().ToString("N");
+        var keepTemporaryCache = false;
 
         Directory.CreateDirectory(tempDirectory);
 
@@ -73,17 +66,32 @@ internal static class PyTorchStateDictLoader
         {
             RunConverterScript(scriptPath, sourcePath, tempDirectory);
 
-            if (Directory.Exists(cacheDirectory))
+            try
             {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
+                if (Directory.Exists(cacheDirectory))
+                {
+                    Directory.Delete(cacheDirectory, recursive: true);
+                }
 
-            Directory.Move(tempDirectory, cacheDirectory);
-            Console.WriteLine($"Converted official PyTorch {modelDisplayName} weights: {cacheDirectory}");
+                Directory.Move(tempDirectory, cacheDirectory);
+                Console.WriteLine($"Converted official PyTorch {modelDisplayName} weights: {cacheDirectory}");
+                return new ConvertedCachePaths(
+                    Path.Combine(cacheDirectory, "manifest.json"),
+                    Path.Combine(cacheDirectory, "data.bin"));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                keepTemporaryCache = true;
+                Console.WriteLine(
+                    $"Warning: could not promote converted {modelDisplayName} cache into shared directory. Using temporary converted cache for this run. Cache: {cacheDirectory}. Details: {ex.Message}");
+                return new ConvertedCachePaths(
+                    Path.Combine(tempDirectory, "manifest.json"),
+                    Path.Combine(tempDirectory, "data.bin"));
+            }
         }
         finally
         {
-            if (Directory.Exists(tempDirectory))
+            if (!keepTemporaryCache && Directory.Exists(tempDirectory))
             {
                 Directory.Delete(tempDirectory, recursive: true);
             }
@@ -124,7 +132,7 @@ internal static class PyTorchStateDictLoader
         var loadedCount = 0;
 
         using var noGradScope = no_grad();
-        using var dataStream = File.OpenRead(dataPath);
+        using var dataStream = OpenConvertedDataStream(dataPath);
 
         foreach (var entry in manifest.Tensors)
         {
@@ -289,6 +297,39 @@ internal static class PyTorchStateDictLoader
     private static string FormatShape(IReadOnlyList<long> shape)
     {
         return string.Join("x", shape);
+    }
+
+    private sealed record ConvertedCachePaths(string ManifestPath, string DataPath);
+
+    private static FileStream OpenConvertedDataStream(string dataPath)
+    {
+        const int maxAttempts = 10;
+        var delay = TimeSpan.FromMilliseconds(200);
+        Exception? lastException = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return new FileStream(
+                    dataPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                lastException = ex;
+            }
+            catch (IOException ex)
+            {
+                lastException = ex;
+            }
+
+            Thread.Sleep(delay);
+        }
+
+        throw new IOException($"Unable to open converted tensor data file after {maxAttempts} attempts: {dataPath}", lastException);
     }
 
     private sealed class ConvertedManifest
