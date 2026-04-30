@@ -243,10 +243,56 @@ internal static class ConvNeXtFactory
 
         public override Tensor forward(Tensor input)
         {
-            var x = input.permute(0, 2, 3, 1);
-            x = functional.layer_norm(x, normalized_shape, weight, bias, eps);
-            x = x.permute(0, 3, 1, 2);
-            return x;
+            var outputDType = input.dtype;
+            Tensor? floatInput = null;
+            Tensor? floatWeight = null;
+            Tensor? floatBias = null;
+            Tensor? normalized = null;
+            Tensor? castBack = null;
+
+            try
+            {
+                var x = input.permute(0, 2, 3, 1);
+                if (x.dtype != ScalarType.Float32)
+                {
+                    floatInput = x.to(ScalarType.Float32);
+                    x = floatInput;
+                }
+
+                Tensor layerNormWeight = weight;
+                if (weight.dtype != ScalarType.Float32)
+                {
+                    floatWeight = weight.to(ScalarType.Float32);
+                    layerNormWeight = floatWeight;
+                }
+
+                Tensor layerNormBias = bias;
+                if (bias.dtype != ScalarType.Float32)
+                {
+                    floatBias = bias.to(ScalarType.Float32);
+                    layerNormBias = floatBias;
+                }
+
+                normalized = functional.layer_norm(x, normalized_shape, layerNormWeight, layerNormBias, eps);
+                var output = normalized.permute(0, 3, 1, 2);
+                if (output.dtype != outputDType)
+                {
+                    castBack = output.to(outputDType);
+                    output.Dispose();
+                    output = castBack;
+                    castBack = null;
+                }
+
+                return output;
+            }
+            finally
+            {
+                castBack?.Dispose();
+                normalized?.Dispose();
+                floatBias?.Dispose();
+                floatWeight?.Dispose();
+                floatInput?.Dispose();
+            }
         }
     }
 

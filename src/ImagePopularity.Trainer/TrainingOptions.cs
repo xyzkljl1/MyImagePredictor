@@ -18,6 +18,7 @@ internal sealed class TrainingOptions
         "fine-tune-learning-rate",
         "weight-decay",
         "popular-loss-weight",
+        "compute-precision",
         "validation-dir",
         "validation-split",
         "seed",
@@ -56,6 +57,8 @@ internal sealed class TrainingOptions
     public double WeightDecay { get; init; } = 1e-4;
 
     public double PopularLossWeight { get; init; } = 1.0;
+
+    public TrainingComputePrecision ComputePrecision { get; init; } = TrainingComputePrecision.Float32;
 
     public IReadOnlyList<string> ValidationFileNames { get; init; } = Array.Empty<string>();
 
@@ -184,6 +187,7 @@ internal sealed class TrainingOptions
         var fineTuneLearningRate = ReadDouble(map, "fine-tune-learning-rate", 5e-5);
         var weightDecay = ReadDouble(map, "weight-decay", 1e-4);
         var popularLossWeight = ReadDouble(map, "popular-loss-weight", 1.0);
+        var computePrecision = ParseComputePrecision(map);
         var popularDirectories = ParseDirectoryList(popularDirectoryValues, "popular-dir");
         var unpopularDirectories = ParseDirectoryList(unpopularDirectoryValues, "unpopular-dir");
         var validationFileNames = ParseValidationFileNames(validationFileNameValues);
@@ -219,6 +223,7 @@ internal sealed class TrainingOptions
             FineTuneLearningRate = fineTuneLearningRate,
             WeightDecay = weightDecay,
             PopularLossWeight = popularLossWeight,
+            ComputePrecision = computePrecision,
             ValidationFileNames = validationFileNames,
             ValidationSplit = validationSplit,
             Seed = seed,
@@ -313,6 +318,7 @@ Usage:
     [--fine-tune-learning-rate 0.00005] \
     [--weight-decay 0.0001] \
     [--popular-loss-weight 1.0] \
+    [--compute-precision fp32] \
     [--validation-dir validation.txt] \
     [--validation-split 0.1] \
     [--max-samples-per-class 0] \
@@ -350,6 +356,9 @@ Notes:
   behavior and fall back to the original sample-level logic.
   Preprocess cache is always enabled for training.
   Pretrained backbone is always enabled.
+  --compute-precision controls the training precision path. Use fp32 to keep
+  the original full-precision route. Use bf16 to enable the ConvNeXt hybrid
+  reduced-precision route (backbone in BF16, head/loss in FP32).
   Supported backbones: convnext_tiny / convnext_small / convnext_base /
   convnext_large.
   If --pretrained-weights is omitted, the trainer will auto-download the
@@ -372,6 +381,7 @@ Notes:
             FineTuneLearningRate = FineTuneLearningRate,
             WeightDecay = WeightDecay,
             PopularLossWeight = PopularLossWeight,
+            ComputePrecision = ComputePrecision,
             ValidationFileNames = ValidationFileNames,
             ValidationSplit = ValidationSplit,
             Seed = Seed,
@@ -577,5 +587,20 @@ Notes:
         }
 
         throw new ArgumentException($"Invalid boolean for --{key}: {value}. Use true/false or 1/0.\n\n{GetUsage()}");
+    }
+
+    private static TrainingComputePrecision ParseComputePrecision(Dictionary<string, string> map)
+    {
+        if (!map.TryGetValue("compute-precision", out var value) || string.IsNullOrWhiteSpace(value))
+        {
+            return TrainingComputePrecision.Float32;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "fp32" or "float32" => TrainingComputePrecision.Float32,
+            "bf16" or "bfloat16" => TrainingComputePrecision.BFloat16,
+            _ => throw new ArgumentException($"Invalid value for --compute-precision: {value}. Use fp32 or bf16.\n\n{GetUsage()}")
+        };
     }
 }

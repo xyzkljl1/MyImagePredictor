@@ -30,6 +30,8 @@ public sealed class ImagePopularityTrainingOptions
 
     public double PopularLossWeight { get; init; } = 1.0;
 
+    public TrainingComputePrecision ComputePrecision { get; init; } = TrainingComputePrecision.Float32;
+
     public IReadOnlyList<string> ValidationFileNames { get; init; } = Array.Empty<string>();
 
     public double ValidationSplit { get; init; } = 0.1;

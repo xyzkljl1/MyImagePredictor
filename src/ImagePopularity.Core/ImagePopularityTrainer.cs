@@ -92,6 +92,7 @@ public sealed class ImagePopularityTrainer
         var bestSavedSelection = LossPriorityState.Unset;
         var bestEarlyStoppingSelection = LossPriorityState.Unset;
         double bestSavedDecisionThreshold = _options.DecisionThreshold;
+        var effectiveComputePrecision = ResolveEffectiveComputePrecision();
 
         var (trainSamples, validationSamples) = LoadDatasets();
         if (trainSamples.Count + validationSamples.Count < 100)
@@ -133,6 +134,7 @@ public sealed class ImagePopularityTrainer
         Console.WriteLine($"Device: {_device.type}");
         Console.WriteLine($"Backbone: {_options.Backbone}");
         Console.WriteLine("Use pretrained backbone: requested (ConvNeXt official .pth weights are used when compatible; otherwise training falls back to random initialization with a warning).");
+        Console.WriteLine($"Compute precision: {FormatComputePrecision(effectiveComputePrecision)}");
         Console.WriteLine($"Train image size: {_options.TrainImageSize}");
         Console.WriteLine($"Recommended inference image size: {_options.TrainImageSize} (auto = train-image-size)");
         Console.WriteLine($"Decision threshold: {_options.DecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)}");
@@ -180,6 +182,7 @@ public sealed class ImagePopularityTrainer
                 backboneWeightsFile: pretrainedWeightsFile,
                 device: CPU);
             model.to(_device);
+            model.SetComputePrecision(effectiveComputePrecision);
 
             if (_options.FreezeBackboneEpochs > 0)
             {
@@ -1467,6 +1470,27 @@ public sealed class ImagePopularityTrainer
     private static string FormatLearningRate(double learningRate)
     {
         return learningRate.ToString("0.################", CultureInfo.InvariantCulture);
+    }
+
+    private TrainingComputePrecision ResolveEffectiveComputePrecision()
+    {
+        if (_options.ComputePrecision == TrainingComputePrecision.BFloat16 && _device.type != DeviceType.CUDA)
+        {
+            Console.WriteLine("Warning: BF16 compute precision was requested, but the selected device is not CUDA. Falling back to FP32.");
+            return TrainingComputePrecision.Float32;
+        }
+
+        return _options.ComputePrecision;
+    }
+
+    private static string FormatComputePrecision(TrainingComputePrecision computePrecision)
+    {
+        return computePrecision switch
+        {
+            TrainingComputePrecision.Float32 => "fp32",
+            TrainingComputePrecision.BFloat16 => "bf16 hybrid (ConvNeXt backbone in BF16, head/loss in FP32)",
+            _ => computePrecision.ToString()
+        };
     }
 
     private static string BuildTemporaryAutoOutputModelPath(string baseOutputPath)

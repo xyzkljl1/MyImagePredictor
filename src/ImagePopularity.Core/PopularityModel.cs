@@ -11,6 +11,7 @@ public sealed class PopularityModel : Module<Tensor, Tensor>
     private readonly Module<Tensor, Tensor> _head;
     private readonly string _backboneName;
     private readonly IReadOnlyList<BackboneStage> _backboneStages;
+    private TrainingComputePrecision _computePrecision = TrainingComputePrecision.Float32;
 
     public string BackboneName => _backboneName;
 
@@ -47,8 +48,54 @@ public sealed class PopularityModel : Module<Tensor, Tensor>
 
     public override Tensor forward(Tensor input)
     {
-        var x = _backbone.forward(input);
-        return _head.forward(x);
+        Tensor? convertedInput = null;
+        Tensor? backboneOutput = null;
+        Tensor? convertedFeatures = null;
+
+        try
+        {
+            var backboneInput = input;
+            if (_computePrecision == TrainingComputePrecision.BFloat16 && input.dtype != ScalarType.BFloat16)
+            {
+                convertedInput = input.to(ScalarType.BFloat16);
+                backboneInput = convertedInput;
+            }
+
+            backboneOutput = _backbone.forward(backboneInput);
+            var headInput = backboneOutput;
+            if (_computePrecision == TrainingComputePrecision.BFloat16 && backboneOutput.dtype != ScalarType.Float32)
+            {
+                convertedFeatures = backboneOutput.to(ScalarType.Float32);
+                headInput = convertedFeatures;
+            }
+
+            return _head.forward(headInput);
+        }
+        finally
+        {
+            convertedFeatures?.Dispose();
+            backboneOutput?.Dispose();
+            convertedInput?.Dispose();
+        }
+    }
+
+    public void SetComputePrecision(TrainingComputePrecision computePrecision)
+    {
+        _computePrecision = computePrecision;
+
+        switch (computePrecision)
+        {
+            case TrainingComputePrecision.Float32:
+                _backbone.to(ScalarType.Float32);
+                _head.to(ScalarType.Float32);
+                break;
+            case TrainingComputePrecision.BFloat16:
+                _backbone.to(ScalarType.BFloat16);
+                _head.to(ScalarType.Float32);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(computePrecision), computePrecision, "Unsupported compute precision.");
+        }
     }
 
     public void SetBackboneTrainable(bool trainable)
