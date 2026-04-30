@@ -60,6 +60,12 @@ internal static class ConvNeXtFactory
 
     private static void TryLoadWeights(ConvNeXtFeatureExtractor backbone, string weightsFile)
     {
+        if (weightsFile.EndsWith(".pth", StringComparison.OrdinalIgnoreCase))
+        {
+            PyTorchStateDictLoader.TryLoadFloat32StateDict(backbone, weightsFile, "ConvNeXt");
+            return;
+        }
+
         try
         {
             backbone.load(weightsFile);

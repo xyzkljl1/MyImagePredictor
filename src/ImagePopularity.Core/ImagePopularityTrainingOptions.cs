@@ -8,9 +8,9 @@ public sealed class ImagePopularityTrainingOptions
     public const int DefaultEarlyStoppingPatience = 4;
     public const double DefaultEarlyStoppingMinDelta = 0.01;
 
-    public required string PopularDirectory { get; init; }
+    public required IReadOnlyList<string> PopularDirectories { get; init; }
 
-    public required string UnpopularDirectory { get; init; }
+    public required IReadOnlyList<string> UnpopularDirectories { get; init; }
 
     public string OutputModelPrefix { get; init; } = string.Empty;
 

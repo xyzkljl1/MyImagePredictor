@@ -645,11 +645,11 @@ public sealed class ImagePopularityTrainer
 
     private IReadOnlyList<LabeledImageSample> LoadSamplesForRandomSplit()
     {
-        var popular = EnumerateImages(_options.PopularDirectory)
+        var popular = EnumerateImages(_options.PopularDirectories)
             .Select(path => CreateSample(path, 1f))
             .ToList();
 
-        var unpopular = EnumerateImages(_options.UnpopularDirectory)
+        var unpopular = EnumerateImages(_options.UnpopularDirectories)
             .Select(path => CreateSample(path, 0f))
             .ToList();
 
@@ -686,13 +686,13 @@ public sealed class ImagePopularityTrainer
 
     private (IReadOnlyList<LabeledImageSample> Train, IReadOnlyList<LabeledImageSample> Validation) LoadSamplesFromExplicitValidationFiles(IReadOnlyList<string> validationFileNames)
     {
-        var popularValidationFiles = ResolveExistingValidationFiles(_options.PopularDirectory, validationFileNames);
-        var unpopularValidationFiles = ResolveExistingValidationFiles(_options.UnpopularDirectory, validationFileNames);
+        var popularValidationFiles = ResolveExistingValidationFiles(_options.PopularDirectories, validationFileNames);
+        var unpopularValidationFiles = ResolveExistingValidationFiles(_options.UnpopularDirectories, validationFileNames);
 
-        var trainPopular = EnumerateImages(_options.PopularDirectory)
+        var trainPopular = EnumerateImages(_options.PopularDirectories)
             .Select(path => CreateSample(path, 1f))
             .ToList();
-        var trainUnpopular = EnumerateImages(_options.UnpopularDirectory)
+        var trainUnpopular = EnumerateImages(_options.UnpopularDirectories)
             .Select(path => CreateSample(path, 0f))
             .ToList();
 
@@ -801,30 +801,29 @@ public sealed class ImagePopularityTrainer
         }
     }
 
-    private IEnumerable<string> EnumerateImages(string directory, IReadOnlyList<string>? excludedDirectories = null)
+    private IEnumerable<string> EnumerateImages(IReadOnlyList<string> directories, IReadOnlyList<string>? excludedDirectories = null)
     {
-        if (!Directory.Exists(directory))
-        {
-            throw new DirectoryNotFoundException($"Directory not found: {directory}");
-        }
-
         var normalizedExcluded = excludedDirectories?
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(NormalizeDirectoryPath)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return EnumerateImagesAndTextReferences(directory, normalizedExcluded);
-    }
-
-    private static IEnumerable<string> EnumerateImagesStatic(string directory)
-    {
-        if (!Directory.Exists(directory))
+        var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var directory in directories)
         {
-            return Array.Empty<string>();
+            if (!Directory.Exists(directory))
+            {
+                throw new DirectoryNotFoundException($"Directory not found: {directory}");
+            }
+
+            foreach (var path in EnumerateImagesAndTextReferences(directory, normalizedExcluded))
+            {
+                results.Add(path);
+            }
         }
 
-        return EnumerateImagesAndTextReferences(directory, excludedDirectories: null);
+        return results;
     }
 
     private static IEnumerable<string> EnumerateImagesAndTextReferences(string directory, IReadOnlyList<string>? excludedDirectories)
@@ -1511,20 +1510,25 @@ public sealed class ImagePopularityTrainer
         }
     }
 
-    private static IReadOnlyList<string> ResolveExistingValidationFiles(string classRoot, IReadOnlyList<string> validationFileNames)
+    private static IReadOnlyList<string> ResolveExistingValidationFiles(IReadOnlyList<string> classRoots, IReadOnlyList<string> validationFileNames)
     {
-        if (!Directory.Exists(classRoot))
-        {
-            return Array.Empty<string>();
-        }
-
         var requestedFileNames = validationFileNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var matchedFiles = Directory
-            .EnumerateFiles(classRoot, "*", SearchOption.AllDirectories)
-            .Where(path => requestedFileNames.Contains(Path.GetFileName(path)))
-            .Where(path => SupportedImageFiles.IsSupported(path) || string.Equals(Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
-            .Select(Path.GetFullPath)
-            .ToArray();
+        var matchedFiles = new List<string>();
+
+        foreach (var classRoot in classRoots)
+        {
+            if (!Directory.Exists(classRoot))
+            {
+                continue;
+            }
+
+            matchedFiles.AddRange(
+                Directory
+                    .EnumerateFiles(classRoot, "*", SearchOption.AllDirectories)
+                    .Where(path => requestedFileNames.Contains(Path.GetFileName(path)))
+                    .Where(path => SupportedImageFiles.IsSupported(path) || string.Equals(Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
+                    .Select(Path.GetFullPath));
+        }
 
         return matchedFiles
             .Distinct(StringComparer.OrdinalIgnoreCase)

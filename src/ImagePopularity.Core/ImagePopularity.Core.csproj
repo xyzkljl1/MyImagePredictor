@@ -12,4 +12,8 @@
     <PackageReference Include="TorchVision" Version="0.106.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Tools\convert_pytorch_state_dict.py" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

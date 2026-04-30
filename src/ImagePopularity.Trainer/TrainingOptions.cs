@@ -34,9 +34,9 @@ internal sealed class TrainingOptions
         "enable-group-aware-training"
     };
 
-    public required string PopularDirectory { get; init; }
+    public required IReadOnlyList<string> PopularDirectories { get; init; }
 
-    public required string UnpopularDirectory { get; init; }
+    public required IReadOnlyList<string> UnpopularDirectories { get; init; }
 
     public string OutputModelPrefix { get; init; } = string.Empty;
 
@@ -92,6 +92,8 @@ internal sealed class TrainingOptions
         }
 
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var popularDirectoryValues = new List<string>();
+        var unpopularDirectoryValues = new List<string>();
         var validationFileNameValues = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -109,6 +111,18 @@ internal sealed class TrainingOptions
             {
                 value = args[i + 1];
                 i++;
+            }
+
+            if (string.Equals(key, "popular-dir", StringComparison.OrdinalIgnoreCase))
+            {
+                popularDirectoryValues.Add(value);
+                continue;
+            }
+
+            if (string.Equals(key, "unpopular-dir", StringComparison.OrdinalIgnoreCase))
+            {
+                unpopularDirectoryValues.Add(value);
+                continue;
             }
 
             if (string.Equals(key, "validation-dir", StringComparison.OrdinalIgnoreCase))
@@ -160,22 +174,14 @@ internal sealed class TrainingOptions
             throw new ArgumentException($"Unknown option(s): {formatted}\n\n{GetUsage()}");
         }
 
-        static string Require(Dictionary<string, string> source, string key)
-        {
-            if (source.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-
-            throw new ArgumentException($"Missing required option --{key}\n\n{GetUsage()}");
-        }
-
         var trainImageSize = ReadInt(map, "train-image-size", 320);
         var epochs = ReadInt(map, "epochs", 20);
         var batchSize = ReadInt(map, "batch-size", 128);
         var learningRate = ReadDouble(map, "learning-rate", 3e-4);
         var fineTuneLearningRate = ReadDouble(map, "fine-tune-learning-rate", 5e-5);
         var weightDecay = ReadDouble(map, "weight-decay", 1e-4);
+        var popularDirectories = ParseDirectoryList(popularDirectoryValues, "popular-dir");
+        var unpopularDirectories = ParseDirectoryList(unpopularDirectoryValues, "unpopular-dir");
         var validationFileNames = ParseValidationFileNames(validationFileNameValues);
         var validationSplit = ReadDouble(map, "validation-split", 0.1);
         var seed = ReadInt(map, "seed", 42);
@@ -196,8 +202,8 @@ internal sealed class TrainingOptions
 
         var options = new TrainingOptions
         {
-            PopularDirectory = Require(map, "popular-dir"),
-            UnpopularDirectory = Require(map, "unpopular-dir"),
+            PopularDirectories = popularDirectories,
+            UnpopularDirectories = unpopularDirectories,
             OutputModelPrefix = outputModelPrefix,
             PreprocessCacheDirectory = map.TryGetValue("preprocess-cache-dir", out var preprocessCacheDirectory)
                 ? preprocessCacheDirectory
@@ -265,13 +271,7 @@ internal sealed class TrainingOptions
             throw new ArgumentException("min-random-crop-scale must be in (0, 1].");
         }
 
-        var popularFullPath = Path.GetFullPath(options.PopularDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var unpopularFullPath = Path.GetFullPath(options.UnpopularDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        if (string.Equals(popularFullPath, unpopularFullPath, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException("popular-dir and unpopular-dir must be different directories.");
-        }
+        ValidateDirectorySets(options.PopularDirectories, options.UnpopularDirectories);
 
         return options;
     }
@@ -308,8 +308,12 @@ Usage:
     [--seed 42]
 
 Notes:
-  --popular-dir should contain only popular images (label=1).
-  --unpopular-dir should contain only unpopular images (label=0).
+  --popular-dir should contain only popular images (label=1). It can be
+  provided multiple times or with ',' / ';' separated paths.
+  --unpopular-dir should contain only unpopular images (label=0). It can be
+  provided multiple times or with ',' / ';' separated paths.
+  No two provided popular/unpopular directories may be the same directory or
+  contain one another.
   --output-model is only a file-name prefix, not a path. It must not contain
   '\' or '/'. Generated models are always written under models/.
   --validation-dir, when provided, is treated as one or more file names to
@@ -346,8 +350,8 @@ Notes:
     {
         return new ImagePopularityTrainingOptions
         {
-            PopularDirectory = PopularDirectory,
-            UnpopularDirectory = UnpopularDirectory,
+            PopularDirectories = PopularDirectories,
+            UnpopularDirectories = UnpopularDirectories,
             OutputModelPrefix = OutputModelPrefix,
             PreprocessCacheDirectory = PreprocessCacheDirectory,
             TrainImageSize = TrainImageSize,
@@ -431,6 +435,81 @@ Notes:
         return fileNames
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static IReadOnlyList<string> ParseDirectoryList(IEnumerable<string> values, string optionName)
+    {
+        var directories = new List<string>();
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var segments = value.Split([',', ';'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            foreach (var segment in segments)
+            {
+                var directory = segment.Trim();
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
+
+                directories.Add(Path.GetFullPath(directory));
+            }
+        }
+
+        var normalized = directories
+            .Select(path => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (normalized.Length == 0)
+        {
+            throw new ArgumentException($"Missing required option --{optionName}\n\n{GetUsage()}");
+        }
+
+        return normalized;
+    }
+
+    private static void ValidateDirectorySets(IReadOnlyList<string> popularDirectories, IReadOnlyList<string> unpopularDirectories)
+    {
+        var allDirectories = popularDirectories
+            .Select(path => ("popular-dir", path))
+            .Concat(unpopularDirectories.Select(path => ("unpopular-dir", path)))
+            .ToArray();
+
+        for (var i = 0; i < allDirectories.Length; i++)
+        {
+            for (var j = i + 1; j < allDirectories.Length; j++)
+            {
+                var first = allDirectories[i];
+                var second = allDirectories[j];
+
+                if (string.Equals(first.path, second.path, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ArgumentException($"{first.Item1} and {second.Item1} must not reference the same directory: {first.path}");
+                }
+
+                if (ContainsDirectory(first.path, second.path) || ContainsDirectory(second.path, first.path))
+                {
+                    throw new ArgumentException($"Data directories must not contain one another: {first.path} <-> {second.path}");
+                }
+            }
+        }
+    }
+
+    private static bool ContainsDirectory(string parentCandidate, string childCandidate)
+    {
+        if (parentCandidate.Length >= childCandidate.Length)
+        {
+            return false;
+        }
+
+        return childCandidate.StartsWith(parentCandidate, StringComparison.OrdinalIgnoreCase) &&
+               (childCandidate[parentCandidate.Length] == Path.DirectorySeparatorChar ||
+                childCandidate[parentCandidate.Length] == Path.AltDirectorySeparatorChar);
     }
 
     private static int ReadInt(Dictionary<string, string> map, string key, int fallback)
