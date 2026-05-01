@@ -169,8 +169,15 @@ public sealed class ImagePopularityTrainer
         }
 
         var earlyStoppingStartEpoch = Math.Max(2, _options.FreezeBackboneEpochs + 2);
-        Console.WriteLine(
-            $"Early stopping: enabled (before Popular Loss < {PopularLossTarget.ToString("0.##", CultureInfo.InvariantCulture)} monitor Popular Loss, then monitor Unpopular Loss with patience {_options.EarlyStoppingPatience}, min delta {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)}, start epoch {earlyStoppingStartEpoch})");
+        if (_options.EnableEarlyStopping)
+        {
+            Console.WriteLine(
+                $"Early stopping: enabled (before Popular Loss < {PopularLossTarget.ToString("0.##", CultureInfo.InvariantCulture)} monitor Popular Loss, then monitor Unpopular Loss with patience {_options.EarlyStoppingPatience}, min delta {_options.EarlyStoppingMinDelta.ToString("0.####", CultureInfo.InvariantCulture)}, start epoch {earlyStoppingStartEpoch})");
+        }
+        else
+        {
+            Console.WriteLine("Early stopping: disabled.");
+        }
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(modelOutputPath))!);
 
@@ -321,12 +328,15 @@ public sealed class ImagePopularityTrainer
                             $"Saved best model: {modelOutputPath} (Pop Loss={bestSavedSelection.PopularLoss:F4}, Unpop Loss={bestSavedSelection.UnpopularLoss:F4}, Val Loss={bestSavedSelection.TotalLoss:F4}, Thr={bestSavedDecisionThreshold.ToString("0.##", CultureInfo.InvariantCulture)})");
                     }
 
-                    if (HasMeaningfulEarlyStoppingImprovement(valMetrics, bestEarlyStoppingSelection, _options.EarlyStoppingMinDelta))
+                    if (_options.EnableEarlyStopping &&
+                        HasMeaningfulEarlyStoppingImprovement(valMetrics, bestEarlyStoppingSelection, _options.EarlyStoppingMinDelta))
                     {
                         bestEarlyStoppingSelection = LossPriorityState.FromEpochMetrics(valMetrics);
                         epochsWithoutMeaningfulImprovement = 0;
                     }
-                    else if (_options.EarlyStoppingPatience > 0 && epoch >= earlyStoppingStartEpoch)
+                    else if (_options.EnableEarlyStopping &&
+                             _options.EarlyStoppingPatience > 0 &&
+                             epoch >= earlyStoppingStartEpoch)
                     {
                         epochsWithoutMeaningfulImprovement++;
                         if (epochsWithoutMeaningfulImprovement >= _options.EarlyStoppingPatience)

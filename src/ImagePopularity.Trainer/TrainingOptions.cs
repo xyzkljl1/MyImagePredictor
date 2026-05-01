@@ -33,7 +33,8 @@ internal sealed class TrainingOptions
         "contrast-jitter",
         "saturation-jitter",
         "min-random-crop-scale",
-        "enable-group-aware-training"
+        "enable-group-aware-training",
+        "enable-early-stopping"
     };
 
     public required IReadOnlyList<string> PopularDirectories { get; init; }
@@ -89,6 +90,8 @@ internal sealed class TrainingOptions
     public double MinRandomCropScale { get; init; } = 0.85;
 
     public bool EnableGroupAwareTraining { get; init; } = true;
+
+    public bool EnableEarlyStopping { get; init; } = false;
 
     public static TrainingOptions Parse(string[] args)
     {
@@ -205,6 +208,7 @@ internal sealed class TrainingOptions
         var saturationJitter = ReadDouble(map, "saturation-jitter", 0.15);
         var minRandomCropScale = ReadDouble(map, "min-random-crop-scale", 0.85);
         var enableGroupAwareTraining = ReadBool(map, "enable-group-aware-training", true);
+        var enableEarlyStopping = ReadBool(map, "enable-early-stopping", false);
         var outputModelPrefix = ParseOutputModelPrefix(
             map.TryGetValue("output-model", out var outputModel) ? outputModel : null);
 
@@ -238,7 +242,8 @@ internal sealed class TrainingOptions
             ContrastJitter = contrastJitter,
             SaturationJitter = saturationJitter,
             MinRandomCropScale = minRandomCropScale,
-            EnableGroupAwareTraining = enableGroupAwareTraining
+            EnableGroupAwareTraining = enableGroupAwareTraining,
+            EnableEarlyStopping = enableEarlyStopping
         };
 
         if (!PopularityModelConfig.IsSupportedBackbone(options.Backbone))
@@ -312,6 +317,7 @@ Usage:
     [--saturation-jitter 0.15] \
     [--min-random-crop-scale 0.85] \
     [--enable-group-aware-training true] \
+    [--enable-early-stopping false] \
     [--epochs 20] \
     [--batch-size 128] \
     [--learning-rate 0.0003] \
@@ -354,6 +360,9 @@ Notes:
   groups during training, and limit per-batch repeats from the same group.
   Pass --enable-group-aware-training false to disable all group-aware
   behavior and fall back to the original sample-level logic.
+  Early stopping is disabled by default. Pass
+  --enable-early-stopping true to re-enable it with the built-in
+  Popular-Loss-first stopping rule.
   Preprocess cache is always enabled for training.
   Pretrained backbone is always enabled.
   --compute-precision controls the training precision path. Use fp32 to keep
@@ -396,7 +405,8 @@ Notes:
             ContrastJitter = ContrastJitter,
             SaturationJitter = SaturationJitter,
             MinRandomCropScale = MinRandomCropScale,
-            EnableGroupAwareTraining = EnableGroupAwareTraining
+            EnableGroupAwareTraining = EnableGroupAwareTraining,
+            EnableEarlyStopping = EnableEarlyStopping
         };
     }
 

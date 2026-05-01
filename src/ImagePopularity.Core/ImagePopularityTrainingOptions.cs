@@ -62,6 +62,8 @@ public sealed class ImagePopularityTrainingOptions
 
     public double DecisionThreshold { get; init; } = DefaultDecisionThreshold;
 
+    public bool EnableEarlyStopping { get; init; } = false;
+
     public int EarlyStoppingPatience { get; init; } = DefaultEarlyStoppingPatience;
 
     public double EarlyStoppingMinDelta { get; init; } = DefaultEarlyStoppingMinDelta;

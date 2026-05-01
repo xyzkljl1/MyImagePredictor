@@ -84,6 +84,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
   --saturation-jitter 0.15 \
   --min-random-crop-scale 0.85 \
   --enable-group-aware-training true \
+  --enable-early-stopping false \
   --learning-rate 0.0003 \
   --fine-tune-learning-rate 0.00005 \
   --weight-decay 0.0001 \
@@ -131,7 +132,7 @@ dotnet run --project src/ImagePopularity.Trainer -- \
 - 训练时使用固定决策阈值 `0.5` 计算 `Train Acc / Val Acc`，并将该阈值写入模型元数据与自动命名文件名（例如 `t05`）。
 - 验证阶段仍会自动在一组候选阈值上扫描，并记录该轮更合适的辅助阈值；这个阈值会写回模型元数据与自动命名文件名，但它**不参与主要训练目标的定义**。
 - 当前 best model 的主目标是：**先满足 `Popular Loss < 0.5`，再让 `Unpopular Loss` 尽可能低，最后才比较总 `Val Loss`**。
-- 已启用 early stopping：从“解冻骨干后的下一轮”开始生效，`patience=4`，`min_delta=0.01`；在 `Popular Loss < 0.5` 之前优先监控 `Popular Loss`，达到该条件后优先监控 `Unpopular Loss`。
+- 默认关闭 early stopping；如需开启，可传 `--enable-early-stopping true`。开启后会从“解冻骨干后的下一轮”开始生效，`patience=4`，`min_delta=0.01`；在 `Popular Loss < 0.5` 之前优先监控 `Popular Loss`，达到该条件后优先监控 `Unpopular Loss`。
 - 训练 batch 使用**平衡 P/U 采样**：每个训练 batch 会尽量保持 `popular/unpopular` 接近 1:1；如果某一类样本较少，会在该 epoch 内对少数类做循环重采样。
 - 可通过 `--popular-loss-weight` 调整 `popular` 样本的训练权重，默认值为 `1.0`。
 - 可通过 `--compute-precision fp32|bf16` 切换训练精度路径：
